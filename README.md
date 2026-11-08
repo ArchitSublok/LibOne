@@ -38,3 +38,80 @@ Most document tools make people build and maintain an organization system themse
 ## Comparison
 
 Tagging file managers provide flexible manual organization; research managers focus on citations and scholarly sources. LibOne focuses on the step those tools often leave to the user: making an existing, disorganized collection of personal files understandable with very little setup.
+
+## Project structure: four parts
+
+### 1. Local Library Foundation
+
+The reliable local layer that discovers and tracks files without taking ownership of them.
+
+- Folder selection and scanning
+- File metadata, change detection, and original-path tracking
+- Local database and portable metadata export
+- Secure opening of the original file in its default application
+
+### 2. Organization & Search Intelligence
+
+The features that turn a file index into a useful library.
+
+- Full-text, filename, tag, and note search
+- Collections, tags, and personal notes
+- Document-type detection and suggested collections
+- Exact-duplicate detection, version grouping, and review queues
+
+### 3. Windows Desktop Experience
+
+The simple interface that makes LibOne approachable for non-technical users.
+
+- Fast first-run setup for Desktop, Downloads, and Documents
+- Library, collection, search-result, and document-detail views
+- Preview, filters, bulk actions, and clear links to original locations
+- Review screens where users approve or reject organization suggestions
+
+### 4. Privacy, Reliability & Release
+
+The work that makes the app dependable enough to trust with important records.
+
+- Local-first privacy controls and transparent data handling
+- Safe-by-default operations: no silent moves, renames, or deletions
+- Backup/restore, missing-file alerts, and metadata export/import
+- Automated tests, Windows packaging, GitHub Releases, and update notes
+
+## Development
+
+### Prerequisites
+
+- **Node.js**: v18 or later (Node v22+ recommended)
+- **Rust toolchain**: Install Rust via [rustup.rs](https://rustup.rs) (`stable-x86_64-pc-windows-msvc`)
+- **Visual Studio C++ Build Tools**: Required on Windows for native linking (`link.exe` and Windows SDK `kernel32.lib`)
+- **WebView2 Runtime**: Included with Windows 10/11
+
+### Setup & Running
+
+1. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+2. **Frontend development**:
+   ```bash
+   npm run dev
+   ```
+
+3. **Type-check and bundle frontend**:
+   ```bash
+   npm run build
+   ```
+
+4. **Run the full Tauri desktop application**:
+   ```bash
+   npm run tauri dev
+   ```
+
+5. **Build production Windows installer**:
+   ```bash
+   npm run tauri build
+   ```
+
+For detailed architecture, local data storage paths, and Phase 1 data flows, see [ARCHITECTURE.md](ARCHITECTURE.md).
+

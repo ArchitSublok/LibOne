@@ -1,0 +1,43 @@
+# Node dependencies and build outputs
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust / Cargo build artifacts
+target/
+src-tauri/target/
+**/*.rs.bk
+
+# Tauri bundle artifacts
+src-tauri/gen/
+
+# SQLite databases & temp files (local data safety)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+local_data/
+
+# OS metadata & caches
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE and Editor directories
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
