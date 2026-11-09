@@ -1,0 +1,24 @@
+# LibOne – Cargo build configuration for Windows (no MSVC install required).
+# Uses:
+#   - rust-lld.exe  (bundled with rustup's MSVC toolchain) as the linker
+#   - xwin-splatted Windows CRT + SDK libraries from ~/.xwin
+#   - clang-cl.exe  from the system LLVM installation (C:\Program Files\LLVM\bin)
+#   - clang-cl for C/C++ build scripts (e.g. vswhom-sys, libsqlite3-sys)
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[env]
+# Windows SDK and CRT library search paths for the MSVC linker
+LIB = "C:\\Users\\archi\\.xwin\\crt\\lib\\x86_64;C:\\Users\\archi\\.xwin\\sdk\\lib\\um\\x86_64;C:\\Users\\archi\\.xwin\\sdk\\lib\\ucrt\\x86_64"
+
+# Windows SDK headers for C/C++ build scripts (e.g. vswhom-sys)
+INCLUDE = "C:\\Users\\archi\\.xwin\\crt\\include;C:\\Users\\archi\\.xwin\\sdk\\include\\um;C:\\Users\\archi\\.xwin\\sdk\\include\\ucrt;C:\\Users\\archi\\.xwin\\sdk\\include\\shared"
+
+# Point cc-rs at clang-cl for C/C++ compilation
+CXX_x86_64_pc_windows_msvc = "C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
+CC_x86_64_pc_windows_msvc  = "C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
+
+# SQLite: use the Windows-bundled winsqlite3.lib (avoid needing to compile SQLite from source)
+SQLITE3_LIB_DIR     = "C:\\Users\\archi\\.xwin\\sdk\\lib\\um\\x86_64"
+SQLITE3_INCLUDE_DIR = "C:\\Users\\archi\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\libsqlite3-sys-0.30.1\\sqlite3"
