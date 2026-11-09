@@ -1,0 +1,53 @@
+FileTree {
+    files: [],
+    dirs: [
+        (
+            "SourceDir",
+            FileTree {
+                files: [],
+                dirs: [
+                    (
+                        "Windows Kits",
+                        FileTree {
+                            files: [],
+                            dirs: [
+                                (
+                                    "Catalogs",
+                                    FileTree {
+                                        files: [
+                                            (
+                                                "catb0656253ef2f688d2982eafa2e73f621.cat",
+                                                11084,
+                                            ),
+                                        ],
+                                        dirs: [],
+                                    },
+                                ),
+                            ],
+                        },
+                    ),
+                ],
+            },
+        ),
+        (
+            "include",
+            FileTree {
+                files: [],
+                dirs: [
+                    (
+                        "shared",
+                        FileTree {
+                            files: [
+                                (
+                                    "ksamd64.inc",
+                                    46628,
+                                ),
+                            ],
+                            dirs: [],
+                        },
+                    ),
+                ],
+            },
+        ),
+    ],
+}
