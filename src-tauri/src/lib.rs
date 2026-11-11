@@ -20,8 +20,8 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to determine app data directory");
 
-            let database = Database::new(app_data_dir)
-                .expect("Failed to initialize SQLite database");
+            let database =
+                Database::new(app_data_dir).expect("Failed to initialize SQLite database");
 
             app.manage(AppState {
                 db: Mutex::new(database),

@@ -80,7 +80,7 @@ pub fn scan_root(root_id: i64, state: State<'_, AppState>) -> Result<ScanStats, 
         .map_err(|e| format!("Failed to find scan root: {}", e))?
         .ok_or_else(|| format!("Scan root with ID {} not found", root_id))?;
 
-    scanner::scan_folder(&db, root.id, &root.path)
+    scanner::scan_folder(&db, root.id, &root.absolute_path)
 }
 
 #[tauri::command]
@@ -92,9 +92,9 @@ pub fn scan_all_roots(state: State<'_, AppState>) -> Result<Vec<ScanStats>, Stri
 
     let mut results = Vec::new();
     for root in roots {
-        match scanner::scan_folder(&db, root.id, &root.path) {
+        match scanner::scan_folder(&db, root.id, &root.absolute_path) {
             Ok(stats) => results.push(stats),
-            Err(err) => eprintln!("Error scanning root {}: {}", root.path, err),
+            Err(err) => eprintln!("Error scanning root {}: {}", root.absolute_path, err),
         }
     }
 
@@ -137,7 +137,11 @@ pub fn open_file_in_default_app(file_path: String) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
         use std::process::Command;
-        let prog = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let prog = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
         Command::new(prog)
             .arg(&file_path)
             .spawn()

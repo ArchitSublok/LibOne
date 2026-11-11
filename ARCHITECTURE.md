@@ -62,10 +62,11 @@ LibOne never stores your documents in an opaque vault or uploads them to any ser
   `%APPDATA%\com.libone.app\libone.db`  
   (Resolves dynamically via Tauri's `app.path().app_data_dir()`)
 - **Storage Engine**: SQLite in Write-Ahead Logging (`WAL`) mode with `NORMAL` synchronous writes for crash resilience and zero file locking.
+- **Migrations**: The Rust `Database` repository applies versioned migrations inside a single SQLite transaction. `schema_migrations` records the applied version; `library_metadata` stores the library's schema version and creation time. A legacy pre-migration schema is renamed and copied forward rather than discarded.
 - **Tables**:
-  - `scan_roots`: User-selected directories with timestamps and scanning status.
-  - `files`: Indexed file metadata (original path, filename, extension, size, modified timestamp, SHA-256 prefix signature, lifecycle status).
-  - `scan_history`: Audit record of scan runs and detected delta statistics.
+  - `scan_roots`: user-selected absolute and normalized paths, display name, enabled state, creation time, and scan lifecycle timestamps/status.
+  - `indexed_files`: metadata only—absolute/normalized path, file name/type, size, available filesystem dates, discovery/last-seen dates, optional hash, and lifecycle status. Original file contents are never copied into SQLite.
+  - `library_metadata`: one local-library record containing schema and creation information.
 
 ---
 
@@ -110,7 +111,7 @@ flowchart LR
 ```
 
 1. **Folder Selection**: User chooses folders via native Windows folder picker (`tauri-plugin-dialog`) or path input.
-2. **In-Place Scanning**: `scanner.rs` traverses folders recursively via `walkdir` without following symlinks. It reads standard file metadata (size, modified time) and generates a fast SHA-256 prefix for fingerprinting.
+2. **In-Place Scanning**: `scanner.rs` traverses folders recursively via `walkdir` without following symlinks. It reads standard filesystem metadata only. SQL is kept exclusively in `db.rs`, the repository layer.
 3. **Change Detection**:
    - **New file**: Recorded as `active`.
    - **Timestamp/size change**: Updated and marked `modified`.
