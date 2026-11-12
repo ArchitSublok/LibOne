@@ -48,6 +48,35 @@ pub struct NewIndexedFile {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedFiles {
+    pub files: Vec<IndexedFile>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FileQueryParams {
+    pub query: Option<String>,
+    pub root_id: Option<i64>,
+    pub extension: Option<String>,
+    pub status: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
+    pub page: Option<usize>,
+    pub page_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDetail {
+    pub file: IndexedFile,
+    pub root_display_name: String,
+    pub root_absolute_path: String,
+    pub exists_on_disk: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScanOptions {
     /// Whether to compute SHA-256 hashes during the scan. Default is false (only on demand).

@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import {
-  FolderPlus,
   RefreshCw,
   Download,
   ExternalLink,
@@ -9,24 +8,43 @@ import {
   CheckCircle2,
   AlertTriangle,
   MoveRight,
-  ShieldCheck,
   Copy,
   Check,
   X,
   Scan,
+  FolderOpen,
+  Info,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
-import { AppInfo, IndexedFile, LibraryExport, ScanRoot } from "./types";
+import {
+  AppInfo,
+  FileDetail,
+  IndexedFile,
+  LibraryExport,
+  PaginatedFiles,
+  ScanRoot,
+} from "./types";
 import {
   exportLibraryMetadata,
   getAppInfo,
-  listIndexedFiles,
+  getIndexedFileDetail,
+  getLibraryExtensions,
   listScanRoots,
-  openFileInDefaultApp,
+  openOriginalFile,
   promptSaveExportPath,
+  queryIndexedFiles,
   scanAllRoots,
+  showInFileExplorer,
 } from "./services/api";
 import { ScanRootsPanel } from "./components/ScanRootsPanel";
 import { ScanScreen } from "./components/ScanScreen";
+import { FileDetailModal } from "./components/FileDetailModal";
 import "./App.css";
 
 export const App: React.FC = () => {
@@ -36,15 +54,38 @@ export const App: React.FC = () => {
   const [rootsLoading, setRootsLoading] = useState(true);
   const [rootsError, setRootsError] = useState<string | null>(null);
 
+  // ── File query & pagination state ─────────────────────────────────────────
   const [selectedRootId, setSelectedRootId] = useState<number | null>(null);
   const [files, setFiles] = useState<IndexedFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [totalFiles, setTotalFiles] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
+  // ── Sorting & filtering state ─────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [extensionFilter, setExtensionFilter] = useState<string>("all");
+  const [distinctExtensions, setDistinctExtensions] = useState<string[]>([]);
+  const [sortBy, setSortBy] = useState<
+    "name" | "path" | "extension" | "size" | "modified" | "status"
+  >("name");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+
+  // ── Detail view & scanner states ──────────────────────────────────────────
+  const [selectedDetail, setSelectedDetail] = useState<FileDetail | null>(null);
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [actionAlert, setActionAlert] = useState<{
+    type: "error" | "warning" | "success";
+    message: string;
+  } | null>(null);
 
   const [isScanning, setIsScanning] = useState(false);
-  const [scanBanner, setScanBanner] = useState<{ message: string; durationMs?: number } | null>(null);
+  const [scanBanner, setScanBanner] = useState<{
+    message: string;
+    durationMs?: number;
+  } | null>(null);
   const [scanScreenOpen, setScanScreenOpen] = useState(false);
   const [scanScreenRootId, setScanScreenRootId] = useState<number | null>(null);
 
@@ -60,11 +101,27 @@ export const App: React.FC = () => {
       .then(setAppInfo)
       .catch((e) => console.error("Failed to load app info", e));
     loadRoots();
+    loadExtensions();
   }, []);
 
+  // When filters or sorting change, reset to page 1
+  useEffect(() => {
+    setPage(1);
+  }, [selectedRootId, searchQuery, statusFilter, extensionFilter, sortBy, sortOrder]);
+
+  // Query files when page or filters change
   useEffect(() => {
     loadFiles();
-  }, [selectedRootId, searchQuery, statusFilter]);
+  }, [
+    page,
+    pageSize,
+    selectedRootId,
+    searchQuery,
+    statusFilter,
+    extensionFilter,
+    sortBy,
+    sortOrder,
+  ]);
 
   // ── Data loaders ──────────────────────────────────────────────────────────
 
@@ -81,19 +138,100 @@ export const App: React.FC = () => {
     }
   };
 
+  const loadExtensions = async () => {
+    try {
+      const exts = await getLibraryExtensions();
+      setDistinctExtensions(exts);
+    } catch (e) {
+      console.warn("Failed to load distinct extensions", e);
+    }
+  };
+
   const loadFiles = async () => {
     setFilesLoading(true);
     try {
-      const list = await listIndexedFiles({
-        query: searchQuery,
-        rootId: selectedRootId ?? undefined,
-        statusFilter: statusFilter !== "all" ? statusFilter : undefined,
+      const paginated: PaginatedFiles = await queryIndexedFiles({
+        query: searchQuery || null,
+        root_id: selectedRootId,
+        extension: extensionFilter !== "all" ? extensionFilter : null,
+        status: statusFilter !== "all" ? statusFilter : null,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        page,
+        page_size: pageSize,
       });
-      setFiles(list);
+
+      setFiles(paginated.files);
+      setTotalFiles(paginated.total);
+      setTotalPages(paginated.total_pages);
     } catch (e) {
-      console.error("Failed to list files", e);
+      console.error("Failed to query files", e);
     } finally {
       setFilesLoading(false);
+    }
+  };
+
+  // ── Sorting handler ───────────────────────────────────────────────────────
+
+  const handleSort = (
+    column: "name" | "path" | "extension" | "size" | "modified" | "status"
+  ) => {
+    if (sortBy === column) {
+      setSortOrder(sortOrder === "asc" ? "desc" : "asc");
+    } else {
+      setSortBy(column);
+      setSortOrder("asc");
+    }
+  };
+
+  const renderSortIndicator = (
+    column: "name" | "path" | "extension" | "size" | "modified" | "status"
+  ) => {
+    if (sortBy !== column) {
+      return <ArrowUpDown size={12} className="sort-indicator-inactive" />;
+    }
+    return sortOrder === "asc" ? (
+      <ArrowUp size={13} className="sort-indicator" />
+    ) : (
+      <ArrowDown size={13} className="sort-indicator" />
+    );
+  };
+
+  // ── File action handlers ──────────────────────────────────────────────────
+
+  const handleOpenFile = async (fileId: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActionAlert(null);
+    try {
+      await openOriginalFile(fileId);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      setActionAlert({ type: "error", message: msg });
+      loadFiles(); // refresh to reflect 'missing' status if file disappeared
+    }
+  };
+
+  const handleShowInExplorer = async (fileId: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActionAlert(null);
+    try {
+      await showInFileExplorer(fileId);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      setActionAlert({ type: "warning", message: msg });
+      loadFiles();
+    }
+  };
+
+  const handleViewDetail = async (fileId: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActionAlert(null);
+    try {
+      const detail = await getIndexedFileDetail(fileId);
+      setSelectedDetail(detail);
+      setDetailModalOpen(true);
+    } catch (err: any) {
+      setActionAlert({ type: "error", message: err?.message || String(err) });
     }
   };
 
@@ -110,31 +248,22 @@ export const App: React.FC = () => {
     try {
       const statsList = await scanAllRoots();
       const totalScanned = statsList.reduce((a, s) => a + s.total_scanned, 0);
-      const totalAdded   = statsList.reduce((a, s) => a + s.added, 0);
-      const totalMod     = statsList.reduce((a, s) => a + s.modified, 0);
-      const totalMoved   = statsList.reduce((a, s) => a + s.moved, 0);
+      const totalAdded = statsList.reduce((a, s) => a + s.added, 0);
+      const totalMod = statsList.reduce((a, s) => a + s.modified, 0);
+      const totalMoved = statsList.reduce((a, s) => a + s.moved, 0);
       const totalMissing = statsList.reduce((a, s) => a + s.missing, 0);
-      const totalMs      = statsList.reduce((a, s) => a + s.duration_ms, 0);
+      const totalMs = statsList.reduce((a, s) => a + s.duration_ms, 0);
       setScanBanner({
         message: `Scan complete — ${totalScanned} files (${totalAdded} added, ${totalMod} modified, ${totalMoved} moved, ${totalMissing} missing)`,
         durationMs: totalMs,
       });
       await loadRoots();
+      await loadExtensions();
       await loadFiles();
     } catch (e: any) {
       setScanBanner({ message: `Scan all failed: ${e?.message ?? e}` });
     } finally {
       setIsScanning(false);
-    }
-  };
-
-  // ── File open ─────────────────────────────────────────────────────────────
-
-  const handleOpenFile = async (filePath: string) => {
-    try {
-      await openFileInDefaultApp(filePath);
-    } catch (e: any) {
-      alert(`Could not open file: ${e?.message ?? e}`);
     }
   };
 
@@ -184,8 +313,11 @@ export const App: React.FC = () => {
     if (!iso) return "—";
     try {
       return new Date(iso).toLocaleDateString(undefined, {
-        year: "numeric", month: "short", day: "numeric",
-        hour: "2-digit", minute: "2-digit",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
       });
     } catch {
       return iso;
@@ -201,13 +333,6 @@ export const App: React.FC = () => {
     return "";
   };
 
-  // ── Derived values ────────────────────────────────────────────────────────
-
-  const totalFilesCount = useMemo(
-    () => roots.reduce((acc, r) => acc + (r.file_count ?? 0), 0),
-    [roots]
-  );
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -217,34 +342,40 @@ export const App: React.FC = () => {
         <div className="brand-section">
           <div className="logo-badge">L1</div>
           <div>
-            <div className="brand-title">LibOne</div>
-            <div className="brand-subtitle">Private, local-first document library</div>
+            <div className="brand-title">
+              LibOne{" "}
+              {appInfo?.version && (
+                <span style={{ fontSize: "0.7rem", opacity: 0.6 }}>
+                  v{appInfo.version}
+                </span>
+              )}
+            </div>
+            <div className="brand-subtitle">
+              Local-first document library for Windows
+            </div>
           </div>
-          <span className="safety-pill">
-            <ShieldCheck size={14} /> Local-first · In-place indexing · Safe by default
-          </span>
         </div>
 
         <div className="header-actions">
           <button
-            className={`btn ${scanScreenOpen ? "btn-primary" : "btn-secondary"}`}
+            className="btn btn-secondary"
             onClick={() => {
-              setScanScreenRootId(selectedRootId);
-              setScanScreenOpen(!scanScreenOpen);
+              setScanScreenRootId(selectedRootId ?? (roots[0]?.id ?? null));
+              setScanScreenOpen(true);
             }}
-            title="Open the real-time folder scanner screen"
+            disabled={isScanning || roots.length === 0}
+            title="Open real-time document scanner"
           >
-            <Scan size={15} />
-            Scanner
+            <Scan size={14} /> Scan Screen
           </button>
 
           <button
             className="btn btn-secondary"
             onClick={handleScanAll}
-            disabled={isScanning}
-            title="Scan all enabled folders for changes"
+            disabled={isScanning || roots.length === 0}
+            title="Incrementally scan all enabled folders"
           >
-            <RefreshCw size={15} className={isScanning ? "spin" : ""} />
+            <RefreshCw size={14} className={isScanning ? "spin" : ""} />
             {isScanning ? "Scanning…" : "Scan All"}
           </button>
 
@@ -253,50 +384,66 @@ export const App: React.FC = () => {
             onClick={handleOpenExportModal}
             title="Export library metadata to JSON"
           >
-            <Download size={15} /> Export JSON
+            <Download size={14} /> Export
           </button>
         </div>
       </header>
 
-      {/* ── Main body ────────────────────────────────────────────────────── */}
+      {/* ── Body grid or Scan Screen ────────────────────────────────────────── */}
       {scanScreenOpen ? (
         <ScanScreen
           roots={roots}
-          initialRootId={scanScreenRootId ?? selectedRootId}
-          onClose={() => setScanScreenOpen(false)}
+          initialRootId={scanScreenRootId}
+          onClose={() => {
+            setScanScreenOpen(false);
+            loadRoots();
+            loadExtensions();
+            loadFiles();
+          }}
           onScanCompleted={() => {
             loadRoots();
+            loadExtensions();
             loadFiles();
           }}
         />
       ) : (
-        <div className="app-main">
-          {/* ── Left sidebar ────────────────────────────────────────────────── */}
-          {rootsError ? (
+        <div className="main-layout">
+          {/* ── Sidebar: Scan Roots Panel ───────────────────────────────────── */}
+          {rootsLoading ? (
             <aside className="sidebar">
-              <div className="sidebar-header">
-                <span className="sidebar-title">Folders</span>
+              <div className="loading-state" style={{ padding: 24 }}>
+                <RefreshCw size={18} className="spin" />
+                <p style={{ marginTop: 8, fontSize: "0.82rem" }}>Loading folders…</p>
               </div>
-              <div className="inline-error" style={{ margin: "12px" }} role="alert">
-                <AlertTriangle size={13} />
-                <span>Failed to load folders: {rootsError}</span>
-                <button className="inline-error__dismiss" onClick={loadRoots}>Retry</button>
+            </aside>
+          ) : rootsError ? (
+            <aside className="sidebar">
+              <div className="inline-error" style={{ margin: 20 }}>
+                <AlertTriangle size={15} />
+                <span>{rootsError}</span>
               </div>
             </aside>
           ) : (
             <ScanRootsPanel
               roots={roots}
               selectedRootId={selectedRootId}
-              totalFileCount={totalFilesCount}
+              totalFileCount={totalFiles}
               appDataDbPath={appInfo?.db_path}
               isScanning={isScanning}
-              onSelectRoot={setSelectedRootId}
-              onRootsChanged={async () => { await loadRoots(); await loadFiles(); }}
+              onSelectRoot={(id) => setSelectedRootId(id)}
+              onRootsChanged={async () => {
+                await loadRoots();
+                await loadExtensions();
+                await loadFiles();
+              }}
               onScanComplete={(stats) => {
                 setScanBanner({
                   message: `Scan complete — ${stats.total_scanned} files (${stats.added} added, ${stats.modified} modified, ${stats.moved} moved, ${stats.missing} missing)`,
                   durationMs: stats.duration_ms,
                 });
+                loadRoots();
+                loadExtensions();
+                loadFiles();
               }}
               onScanningChange={setIsScanning}
               onOpenScanScreen={(id) => {
@@ -306,160 +453,432 @@ export const App: React.FC = () => {
             />
           )}
 
-        {/* ── Content area ────────────────────────────────────────────────── */}
-        <main className="content-area">
-          {/* Search + filters toolbar */}
-          <div className="content-toolbar">
-            <div className="search-bar-row">
-              <div className="search-input-wrapper">
-                <Search size={16} className="search-icon" />
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search file names, extensions, or paths…"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
+          {/* ── Content area ────────────────────────────────────────────────── */}
+          <main className="content-area">
+            {/* Search + filters toolbar */}
+            <div className="content-toolbar">
+              <div className="search-bar-row">
+                <div className="search-input-wrapper">
+                  <Search size={16} className="search-icon" />
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Search file names, extensions, or paths…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="filters-row">
-              <div className="status-filter-pills">
-                {(["all", "indexed", "modified", "moved", "missing"] as const).map((s) => (
-                  <button
-                    key={s}
-                    className={`filter-pill ${statusFilter === s ? "active" : ""}`}
-                    onClick={() => setStatusFilter(s)}
-                  >
-                    {s === "all" ? "All Statuses" : s.charAt(0).toUpperCase() + s.slice(1)}
-                  </button>
-                ))}
-              </div>
-              <div className="result-count-label">
-                {filesLoading ? "Loading…" : `${files.length} document${files.length !== 1 ? "s" : ""}`}
-              </div>
-            </div>
-          </div>
-
-          {/* Scan result banner */}
-          {scanBanner && (
-            <div className="stats-banner">
-              <div className="stats-badges-group">
-                <CheckCircle2 size={15} color="#10b981" />
-                <span>{scanBanner.message}</span>
-                {scanBanner.durationMs != null && (
-                  <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginLeft: 6 }}>
-                    ({scanBanner.durationMs}ms)
-                  </span>
-                )}
-              </div>
-              <button
-                className="btn btn-secondary"
-                style={{ padding: "2px 8px", fontSize: "0.72rem" }}
-                onClick={() => setScanBanner(null)}
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-
-          {/* File table */}
-          <div className="file-table-container">
-            {filesLoading ? (
-              <div className="loading-state" aria-busy="true">
-                <RefreshCw size={22} className="spin" style={{ color: "var(--text-muted)" }} />
-                <p style={{ color: "var(--text-muted)", marginTop: 10 }}>Loading files…</p>
-              </div>
-            ) : files.length > 0 ? (
-              <table className="file-table">
-                <thead>
-                  <tr>
-                    <th>Document</th>
-                    <th>Status</th>
-                    <th>Size</th>
-                    <th>Modified</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {files.map((file) => (
-                    <tr key={file.id} className="file-row">
-                      <td className="file-cell">
-                        <div className="file-name-cell">
-                          <span className={`file-ext-badge ${getExtensionClass(file.extension)}`}>
-                            {file.extension || "FILE"}
-                          </span>
-                          <div>
-                            <div>{file.file_name}</div>
-                            <div className="path-subtext" title={file.absolute_path}>
-                              {file.absolute_path}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="file-cell">
-                        {file.status === "indexed" && (
-                          <span className="badge badge-active">Indexed</span>
-                        )}
-                        {file.status === "modified" && (
-                          <span className="badge badge-modified" title="Content modified on disk">
-                            <AlertTriangle size={12} /> Modified
-                          </span>
-                        )}
-                        {file.status === "moved" && (
-                          <span className="badge badge-moved" title="File detected as moved">
-                            <MoveRight size={12} /> Moved
-                          </span>
-                        )}
-                        {file.status === "missing" && (
-                          <span className="badge badge-missing" title="No longer at original path">
-                            Missing
-                          </span>
-                        )}
-                      </td>
-                      <td className="file-cell" style={{ color: "var(--text-secondary)" }}>
-                        {formatBytes(file.size_bytes)}
-                      </td>
-                      <td className="file-cell" style={{ color: "var(--text-secondary)" }}>
-                        {formatDate(file.modified_at)}
-                      </td>
-                      <td className="file-cell">
-                        <button
-                          className="btn btn-secondary"
-                          style={{ padding: "5px 10px", fontSize: "0.76rem" }}
-                          onClick={() => handleOpenFile(file.absolute_path)}
-                          disabled={file.status === "missing"}
-                          title="Open in Windows default application"
-                        >
-                          <ExternalLink size={13} /> Open
-                        </button>
-                      </td>
-                    </tr>
+              {/* Status pills + format selector */}
+              <div className="filters-row">
+                <div className="status-filter-pills">
+                  {(
+                    [
+                      "all",
+                      "indexed",
+                      "changed",
+                      "missing",
+                      "inaccessible",
+                    ] as const
+                  ).map((s) => (
+                    <button
+                      key={s}
+                      className={`filter-pill ${statusFilter === s ? "active" : ""}`}
+                      onClick={() => setStatusFilter(s)}
+                    >
+                      {s === "all"
+                        ? "All Statuses"
+                        : s.charAt(0).toUpperCase() + s.slice(1)}
+                    </button>
                   ))}
-                </tbody>
-              </table>
-            ) : (
-              <div className="empty-state">
-                <FileText className="empty-state-icon" />
-                <h3>No documents found</h3>
-                <p>
-                  {searchQuery || statusFilter !== "all"
-                    ? "Try adjusting your search query or status filter."
-                    : roots.length === 0
-                    ? "Add a folder to begin indexing your documents."
-                    : "This folder has not been scanned yet, or contains no files."}
-                </p>
-                {roots.length === 0 && !rootsLoading && (
-                  <button className="btn btn-primary" onClick={() => {}}>
-                    <FolderPlus size={15} /> Add Folder
-                  </button>
-                )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <select
+                    className="filter-select"
+                    value={extensionFilter}
+                    onChange={(e) => setExtensionFilter(e.target.value)}
+                    title="Filter by file extension"
+                  >
+                    <option value="all">All Formats</option>
+                    {distinctExtensions.map((ext) => (
+                      <option key={ext} value={ext}>
+                        .{ext.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="result-count-label">
+                    {filesLoading
+                      ? "Loading…"
+                      : `${totalFiles} document${totalFiles !== 1 ? "s" : ""}`}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Alert Banner (e.g. missing file on disk notification) */}
+            {actionAlert && (
+              <div
+                className="stats-banner"
+                style={{
+                  background:
+                    actionAlert.type === "error"
+                      ? "rgba(239, 68, 68, 0.15)"
+                      : "rgba(245, 158, 11, 0.15)",
+                  border: `1px solid ${
+                    actionAlert.type === "error"
+                      ? "rgba(239, 68, 68, 0.3)"
+                      : "rgba(245, 158, 11, 0.3)"
+                  }`,
+                  color: actionAlert.type === "error" ? "#fca5a5" : "#fcd34d",
+                }}
+              >
+                <div className="stats-badges-group">
+                  <AlertTriangle
+                    size={15}
+                    color={actionAlert.type === "error" ? "#f87171" : "#fbbf24"}
+                  />
+                  <span>{actionAlert.message}</span>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                  onClick={() => setActionAlert(null)}
+                >
+                  Dismiss
+                </button>
               </div>
             )}
-          </div>
-        </main>
-      </div>
+
+            {/* Scan result banner */}
+            {scanBanner && (
+              <div className="stats-banner">
+                <div className="stats-badges-group">
+                  <CheckCircle2 size={15} color="#10b981" />
+                  <span>{scanBanner.message}</span>
+                  {scanBanner.durationMs != null && (
+                    <span
+                      style={{
+                        fontSize: "0.72rem",
+                        color: "var(--text-muted)",
+                        marginLeft: 6,
+                      }}
+                    >
+                      ({scanBanner.durationMs}ms)
+                    </span>
+                  )}
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                  onClick={() => setScanBanner(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {/* File table */}
+            <div className="file-table-container">
+              {filesLoading ? (
+                <div className="loading-state" aria-busy="true">
+                  <RefreshCw
+                    size={22}
+                    className="spin"
+                    style={{ color: "var(--text-muted)" }}
+                  />
+                  <p style={{ color: "var(--text-muted)", marginTop: 10 }}>
+                    Loading documents…
+                  </p>
+                </div>
+              ) : files.length > 0 ? (
+                <table className="file-table">
+                  <thead>
+                    <tr>
+                      <th
+                        className="th-sortable"
+                        onClick={() => handleSort("name")}
+                        title="Sort by file name"
+                      >
+                        <div className="th-content">
+                          <span>Document</span>
+                          {renderSortIndicator("name")}
+                        </div>
+                      </th>
+                      <th
+                        className="th-sortable"
+                        onClick={() => handleSort("extension")}
+                        title="Sort by file format"
+                        style={{ width: 90 }}
+                      >
+                        <div className="th-content">
+                          <span>Format</span>
+                          {renderSortIndicator("extension")}
+                        </div>
+                      </th>
+                      <th
+                        className="th-sortable"
+                        onClick={() => handleSort("status")}
+                        title="Sort by indexing status"
+                        style={{ width: 110 }}
+                      >
+                        <div className="th-content">
+                          <span>Status</span>
+                          {renderSortIndicator("status")}
+                        </div>
+                      </th>
+                      <th
+                        className="th-sortable"
+                        onClick={() => handleSort("size")}
+                        title="Sort by file size"
+                        style={{ width: 110 }}
+                      >
+                        <div className="th-content">
+                          <span>Size</span>
+                          {renderSortIndicator("size")}
+                        </div>
+                      </th>
+                      <th
+                        className="th-sortable"
+                        onClick={() => handleSort("modified")}
+                        title="Sort by modified date"
+                        style={{ width: 150 }}
+                      >
+                        <div className="th-content">
+                          <span>Modified</span>
+                          {renderSortIndicator("modified")}
+                        </div>
+                      </th>
+                      <th style={{ width: 200 }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {files.map((file) => (
+                      <tr
+                        key={file.id}
+                        className="file-row clickable-row"
+                        onClick={() => handleViewDetail(file.id)}
+                        title="Click to view file details"
+                      >
+                        <td className="file-cell">
+                          <div className="file-name-cell">
+                            <span
+                              className={`file-ext-badge ${getExtensionClass(
+                                file.extension
+                              )}`}
+                            >
+                              {file.extension || "FILE"}
+                            </span>
+                            <div style={{ overflow: "hidden" }}>
+                              <div style={{ fontWeight: 500 }}>
+                                {file.file_name}
+                              </div>
+                              <div
+                                className="path-subtext"
+                                title={file.absolute_path}
+                              >
+                                {file.absolute_path}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="file-cell" style={{ textTransform: "uppercase", fontSize: "0.78rem" }}>
+                          {file.extension || "—"}
+                        </td>
+                        <td className="file-cell">
+                          {file.status === "indexed" && (
+                            <span className="badge badge-active">Indexed</span>
+                          )}
+                          {file.status === "changed" && (
+                            <span
+                              className="badge badge-modified"
+                              title="Size or timestamp changed on disk"
+                            >
+                              <AlertTriangle size={12} /> Changed
+                            </span>
+                          )}
+                          {file.status === "moved" && (
+                            <span
+                              className="badge badge-moved"
+                              title="Detected as moved / renamed"
+                            >
+                              <MoveRight size={12} /> Moved
+                            </span>
+                          )}
+                          {file.status === "missing" && (
+                            <span
+                              className="badge badge-missing"
+                              title="No longer present at recorded path"
+                            >
+                              Missing
+                            </span>
+                          )}
+                          {file.status === "inaccessible" && (
+                            <span
+                              className="badge badge-modified"
+                              title="File is locked or unreadable"
+                            >
+                              Inaccessible
+                            </span>
+                          )}
+                          {file.status === "error" && (
+                            <span className="badge badge-missing">Error</span>
+                          )}
+                        </td>
+                        <td
+                          className="file-cell"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          {formatBytes(file.size_bytes)}
+                        </td>
+                        <td
+                          className="file-cell"
+                          style={{ color: "var(--text-secondary)", fontSize: "0.8rem" }}
+                        >
+                          {formatDate(file.modified_at)}
+                        </td>
+                        <td className="file-cell">
+                          <div
+                            className="action-buttons-group"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              className="btn btn-primary"
+                              style={{ padding: "4px 8px", fontSize: "0.74rem" }}
+                              onClick={(e) => handleOpenFile(file.id, e)}
+                              disabled={file.status === "missing"}
+                              title={
+                                file.status === "missing"
+                                  ? "Cannot open missing file"
+                                  : "Open with default application"
+                              }
+                            >
+                              <ExternalLink size={12} /> Open
+                            </button>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: "4px 8px", fontSize: "0.74rem" }}
+                              onClick={(e) => handleShowInExplorer(file.id, e)}
+                              title="Show in Windows File Explorer"
+                            >
+                              <FolderOpen size={12} /> Explorer
+                            </button>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: "4px 8px", fontSize: "0.74rem" }}
+                              onClick={(e) => handleViewDetail(file.id, e)}
+                              title="View Document Details"
+                            >
+                              <Info size={12} /> Details
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="empty-state">
+                  <FileText className="empty-state-icon" />
+                  <h3>No documents found</h3>
+                  <p>
+                    {searchQuery ||
+                    statusFilter !== "all" ||
+                    extensionFilter !== "all"
+                      ? "Try adjusting your search query, status filter, or format filter."
+                      : roots.length === 0
+                      ? "Add a folder to begin indexing your documents."
+                      : "This folder has not been scanned yet, or contains no files."}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* ── Pagination Footer ────────────────────────────────────────── */}
+            {totalFiles > 0 && (
+              <div className="pagination-footer">
+                <div className="page-size-selector">
+                  <span>Show</span>
+                  <select
+                    className="filter-select"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setPage(1);
+                    }}
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                  <span>
+                    per page · Showing{" "}
+                    <strong>{(page - 1) * pageSize + 1}</strong> –{" "}
+                    <strong>{Math.min(page * pageSize, totalFiles)}</strong> of{" "}
+                    <strong>{totalFiles}</strong> documents
+                  </span>
+                </div>
+
+                <div className="pagination-controls">
+                  <button
+                    className="pagination-btn"
+                    onClick={() => setPage(1)}
+                    disabled={page <= 1}
+                    title="First page"
+                  >
+                    <ChevronsLeft size={14} />
+                  </button>
+                  <button
+                    className="pagination-btn"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                    title="Previous page"
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+
+                  <span style={{ margin: "0 6px", fontSize: "0.8rem" }}>
+                    Page <strong>{page}</strong> of <strong>{totalPages}</strong>
+                  </span>
+
+                  <button
+                    className="pagination-btn"
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                    title="Next page"
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                  <button
+                    className="pagination-btn"
+                    onClick={() => setPage(totalPages)}
+                    disabled={page >= totalPages}
+                    title="Last page"
+                  >
+                    <ChevronsRight size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
       )}
+
+      {/* ── File Detail Modal ─────────────────────────────────────────────── */}
+      <FileDetailModal
+        detail={selectedDetail}
+        isOpen={detailModalOpen}
+        onClose={() => {
+          setDetailModalOpen(false);
+          setSelectedDetail(null);
+        }}
+        onFileUpdated={() => {
+          loadFiles();
+        }}
+      />
 
       {/* ── Export modal ─────────────────────────────────────────────────── */}
       {exportModalOpen && exportData && (
@@ -468,33 +887,51 @@ export const App: React.FC = () => {
             <div className="modal-header">
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Download size={18} color="#38bdf8" />
-                <h3 style={{ fontSize: "1.05rem" }}>Safe Library Metadata Export</h3>
+                <h3 style={{ fontSize: "1.05rem" }}>
+                  Safe Library Metadata Export
+                </h3>
               </div>
-              <button className="btn btn-danger-ghost" onClick={() => setExportModalOpen(false)}>
+              <button
+                className="btn btn-danger-ghost"
+                onClick={() => setExportModalOpen(false)}
+              >
                 <X size={18} />
               </button>
             </div>
 
             <div className="modal-body">
-              <p style={{ fontSize: "0.84rem", color: "var(--text-secondary)" }}>
-                LibOne exports only index metadata — file paths, sizes, and timestamps.
-                Document contents are never stored or exported.
+              <p
+                style={{
+                  fontSize: "0.84rem",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                LibOne exports only index metadata — file paths, sizes, and
+                timestamps. Document contents are never stored or exported.
               </p>
 
               <div
                 style={{
-                  display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-                  gap: 12, background: "var(--bg-card)", padding: 12,
-                  borderRadius: 8, fontSize: "0.82rem",
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gap: 12,
+                  background: "var(--bg-card)",
+                  padding: 12,
+                  borderRadius: 8,
+                  fontSize: "0.82rem",
                 }}
               >
                 <div>
                   <div style={{ color: "var(--text-muted)" }}>Total Folders</div>
-                  <strong style={{ fontSize: "1.1rem" }}>{exportData.summary.total_roots}</strong>
+                  <strong style={{ fontSize: "1.1rem" }}>
+                    {exportData.summary.total_roots}
+                  </strong>
                 </div>
                 <div>
                   <div style={{ color: "var(--text-muted)" }}>Total Files</div>
-                  <strong style={{ fontSize: "1.1rem" }}>{exportData.summary.total_files}</strong>
+                  <strong style={{ fontSize: "1.1rem" }}>
+                    {exportData.summary.total_files}
+                  </strong>
                 </div>
                 <div>
                   <div style={{ color: "var(--text-muted)" }}>Total Size</div>
@@ -505,28 +942,52 @@ export const App: React.FC = () => {
               </div>
 
               {exportStatusText && (
-                <div style={{ color: "#34d399", fontSize: "0.82rem", fontWeight: 500 }}>
+                <div
+                  style={{
+                    color: "#34d399",
+                    fontSize: "0.82rem",
+                    fontWeight: 500,
+                  }}
+                >
                   ✓ {exportStatusText}
                 </div>
               )}
 
               <div>
-                <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: 6 }}>
+                <div
+                  style={{
+                    fontSize: "0.78rem",
+                    color: "var(--text-muted)",
+                    marginBottom: 6,
+                  }}
+                >
                   JSON Preview:
                 </div>
                 <div className="json-preview">
                   {JSON.stringify(exportData, null, 2).slice(0, 3000)}
-                  {JSON.stringify(exportData, null, 2).length > 3000 ? "\n… (truncated preview)" : ""}
+                  {JSON.stringify(exportData, null, 2).length > 3000
+                    ? "\n… (truncated preview)"
+                    : ""}
                 </div>
               </div>
             </div>
 
             <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={handleCopyExportJson}>
-                {copiedExport ? <Check size={14} color="#34d399" /> : <Copy size={14} />}
+              <button
+                className="btn btn-secondary"
+                onClick={handleCopyExportJson}
+              >
+                {copiedExport ? (
+                  <Check size={14} color="#34d399" />
+                ) : (
+                  <Copy size={14} />
+                )}
                 {copiedExport ? "Copied JSON" : "Copy to Clipboard"}
               </button>
-              <button className="btn btn-primary" onClick={handleSaveExportToFile}>
+              <button
+                className="btn btn-primary"
+                onClick={handleSaveExportToFile}
+              >
                 <Download size={14} /> Save to File (.json)
               </button>
             </div>

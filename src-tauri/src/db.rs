@@ -1,7 +1,8 @@
 //! The local SQLite repository. SQL is deliberately contained here, away from Tauri commands.
 
 use crate::models::{
-    ExportSummary, IndexedFile, LibraryExport, NewIndexedFile, ScanRoot, ScanStats,
+    ExportSummary, FileDetail, FileQueryParams, IndexedFile, LibraryExport, NewIndexedFile,
+    PaginatedFiles, ScanRoot, ScanStats,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -135,6 +136,11 @@ impl Database {
         Ok(files_with(&conn, "WHERE id=?1", params![id])?.pop())
     }
 
+    pub fn get_file_by_normalized_path(&self, normalized_path: &str) -> Result<Option<IndexedFile>> {
+        let conn = self.open()?;
+        Ok(files_with(&conn, "WHERE normalized_path=?1", params![normalized_path])?.pop())
+    }
+
     pub fn list_files(
         &self,
         query: Option<String>,
@@ -168,6 +174,115 @@ impl Database {
         values.push(Box::new(offset.unwrap_or(0) as i64));
         let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
         files_with(&conn, &sql, refs.as_slice())
+    }
+
+    pub fn query_files(&self, params: &FileQueryParams) -> Result<PaginatedFiles> {
+        let conn = self.open()?;
+        let mut where_clauses = vec!["1=1".to_string()];
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+
+        if let Some(root) = params.root_id {
+            where_clauses.push("scan_root_id=?".into());
+            values.push(Box::new(root));
+        }
+
+        if let Some(ref ext) = params.extension.as_ref().filter(|e| !e.trim().is_empty() && *e != "all") {
+            where_clauses.push("extension=?".into());
+            values.push(Box::new(ext.trim().to_lowercase()));
+        }
+
+        if let Some(ref st) = params.status.as_ref().filter(|s| !s.trim().is_empty() && *s != "all") {
+            where_clauses.push("status=?".into());
+            values.push(Box::new(st.trim().to_lowercase()));
+        }
+
+        if let Some(ref q) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
+            where_clauses.push("(file_name LIKE ? OR absolute_path LIKE ? OR extension LIKE ?)".into());
+            let pattern = format!("%{}%", q.trim());
+            values.push(Box::new(pattern.clone()));
+            values.push(Box::new(pattern.clone()));
+            values.push(Box::new(pattern));
+        }
+
+        let where_sql = where_clauses.join(" AND ");
+
+        // 1. Total matching records
+        let count_sql = format!("SELECT COUNT(*) FROM indexed_files WHERE {where_sql}");
+        let count_refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let total: usize = conn.query_row(&count_sql, count_refs.as_slice(), |r| r.get(0))?;
+
+        // 2. Sorting
+        let order_col = match params.sort_by.as_deref().unwrap_or("name") {
+            "name" => "file_name",
+            "path" => "normalized_path",
+            "extension" => "extension",
+            "size" => "size_bytes",
+            "modified" => "modified_at",
+            "status" => "status",
+            _ => "file_name",
+        };
+
+        let order_dir = match params.sort_order.as_deref().unwrap_or("asc").to_lowercase().as_str() {
+            "desc" => "DESC",
+            _ => "ASC",
+        };
+
+        let page = params.page.unwrap_or(1).max(1);
+        let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
+        let offset = (page - 1) * page_size;
+        let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+
+        let query_sql = format!(
+            "WHERE {where_sql} ORDER BY {order_col} {order_dir}, id ASC LIMIT ? OFFSET ?"
+        );
+        values.push(Box::new(page_size as i64));
+        values.push(Box::new(offset as i64));
+
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let items = files_with(&conn, &query_sql, refs.as_slice())?;
+
+        Ok(PaginatedFiles {
+            files: items,
+            total,
+            page,
+            page_size,
+            total_pages,
+        })
+    }
+
+    pub fn get_file_detail(&self, file_id: i64) -> Result<Option<FileDetail>> {
+        let file = match self.get_indexed_file(file_id)? {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+
+        let root = self.get_scan_root(file.scan_root_id)?;
+        let (root_name, root_path) = match root {
+            Some(r) => (r.display_name, r.absolute_path),
+            None => ("Unknown Root".to_string(), String::new()),
+        };
+
+        let exists = Path::new(&file.absolute_path).exists();
+
+        Ok(Some(FileDetail {
+            file,
+            root_display_name: root_name,
+            root_absolute_path: root_path,
+            exists_on_disk: exists,
+        }))
+    }
+
+    pub fn get_distinct_extensions(&self) -> Result<Vec<String>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT extension FROM indexed_files WHERE extension IS NOT NULL AND extension != '' ORDER BY extension ASC",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        let mut exts = Vec::new();
+        for r in rows {
+            exts.push(r?);
+        }
+        Ok(exts)
     }
 
     pub fn insert_indexed_file(&self, file: &NewIndexedFile) -> Result<IndexedFile> {

@@ -117,7 +117,10 @@ flowchart LR
    - **Timestamp/size change**: Updated and marked `modified`.
    - **Identical signature at new path with missing old path**: Detected as `moved`.
    - **Missing from disk**: Flagged as `missing` (never deleted from index without user consent).
-4. **Opening Originals**: Windows default application handler executes the original path in-place using Windows shell commands (`cmd /c start "" "<path>"`).
+4. **Opening Originals & Revealing Files**:
+   - **Path Authorization**: Before opening or revealing any file, LibOne verifies that the file record exists in SQLite, belongs to an enabled scan root, and is strictly within authorized scan root boundaries.
+   - **Non-Shell Execution**: LibOne never executes files via `cmd.exe` or shell command string interpolation. On Windows, it invokes native Win32 `ShellExecuteW` directly to launch the default registered handler, and spawns `explorer.exe /select,"<path>"` via direct argument passing without shell interpolation.
+   - **Unavailable / Missing Handling**: If an indexed document no longer exists on disk, LibOne updates its status to `missing` and returns a descriptive explanation instead of failing silently.
 5. **Metadata Export**: Complete snapshot serialized to a standardized, self-contained JSON schema.
 
 ---
@@ -169,3 +172,31 @@ To track files across renames and moves within a scan root without reading file 
 2. **Cross-Root Moves**: Rename and move tracking is scoped to the containing scan root. Moving a file from `D:\Documents` (Root 1) to `E:\Archive` (Root 2) will mark the file missing in Root 1 and new in Root 2.
 3. **External Editors that Replace via Delete+Create**: Some text editors save files by writing to a temporary file, deleting the original, and renaming the temporary file into place. On NTFS, this may generate a new file ID. The scanner handles this via normalized path matching if the destination path remains the same.
 4. **Cooperative Cancellation**: Scans check atomic cancellation tokens between directory entries. Cancelling a scan halts further traversal and preserves all records indexed up to that point; files in unvisited subtrees are left untouched and are **not** marked missing.
+
+---
+
+## 7. Library Access API & Security Design
+
+### 7.1 Paginated File Listing & Query Engine
+The SQLite repository layer provides `query_files` with parameterized SQL:
+- **Pagination**: Returns fixed-size chunks using SQL `LIMIT ? OFFSET ?`, accompanied by total count calculations (`COUNT(*)`) and total page computation.
+- **Sorting**: Validates sort keys against a strict whitelist (`name`, `path`, `extension`, `size`, `modified`, `status`) to prevent SQL injection, appending direction (`ASC` / `DESC`).
+- **Filtering**: Combines scan root restrictions (`scan_root_id`), format restrictions (`extension`), lifecycle status filters (`status`), and multi-field substring queries (`file_name`, `absolute_path`, `extension`).
+- **Format Discovery**: `get_distinct_extensions` queries distinct non-empty file extensions to populate UI filter dropdowns dynamically.
+
+### 7.2 Path Authorization Pipeline
+Before opening or revealing any original document on disk, LibOne runs `validate_file_for_access`:
+1. **Index Existence**: Ensures the target record exists in SQLite. Rejects arbitrary unindexed file paths.
+2. **Scan Root Authorization**: Ensures the containing scan root exists and is marked `enabled`. Disabling a folder instantly blocks opening documents from it.
+3. **Boundary Verification**: Verifies the normalized file path starts with the normalized scan root path, preventing directory traversal or symlink escapes.
+4. **On-Disk Verification**: Checks that the file exists on disk. If the file has disappeared, LibOne updates its SQLite status to `missing` and returns a descriptive error explanation.
+5. **Regular File Verification**: Rejects directories, junctions, or device targets.
+
+### 7.3 Non-Shell Execution Guarantee
+To guarantee safety and prevent command injection or execution of malicious batch scripts:
+- **Default Application Launching**: On Windows, LibOne calls native Win32 `ShellExecuteW(NULL, L"open", wide_path, NULL, NULL, SW_SHOWNORMAL)` from `shell32.dll`. This directly resolves the registered default application without invoking `cmd.exe`, PowerShell, or any shell wrapper.
+- **Show in File Explorer**: Uses direct process creation via `explorer.exe /select,"<file_path>"`. If the file is missing, LibOne attempts to reveal the containing folder while notifying the user.
+
+### 7.4 Document Privacy
+- LibOne displays and queries filesystem metadata only (paths, sizes, dates, hashes, status).
+- Document contents are never loaded into memory for previewing, and are never transmitted across IPC or external networks.

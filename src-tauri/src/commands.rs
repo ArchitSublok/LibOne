@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::Database;
-use crate::models::{AppInfo, IndexedFile, LibraryExport, ScanOptions, ScanProgress, ScanRoot, ScanStats};
+use crate::models::{
+    AppInfo, FileDetail, FileQueryParams, IndexedFile, LibraryExport, PaginatedFiles, ScanOptions,
+    ScanProgress, ScanRoot, ScanStats,
+};
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
 
@@ -357,42 +360,269 @@ pub fn list_indexed_files(
         .map_err(db_err)
 }
 
-// ── File open ─────────────────────────────────────────────────────────────────
+#[tauri::command]
+pub fn query_indexed_files(
+    params: FileQueryParams,
+    state: State<'_, AppState>,
+) -> Result<PaginatedFiles, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.query_files(&params).map_err(db_err)
+}
 
 #[tauri::command]
-pub fn open_file_in_default_app(file_path: String) -> Result<(), String> {
-    let path = Path::new(&file_path);
-    if !path.exists() {
-        return Err(format!("File no longer exists on disk: {file_path}"));
-    }
-    if !path.is_file() {
-        return Err(format!("Path is not a regular file: {file_path}"));
+pub fn get_indexed_file_detail(
+    file_id: i64,
+    state: State<'_, AppState>,
+) -> Result<FileDetail, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_file_detail(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))
+}
+
+#[tauri::command]
+pub fn get_library_extensions(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_distinct_extensions().map_err(db_err)
+}
+
+// ── File access authorization & safe launching ───────────────────────────────
+
+/// Validate an indexed file before opening or revealing it.
+/// Requirements:
+/// - Target must have a valid indexed file record in SQLite.
+/// - Target must belong to an enabled scan root.
+/// - Target path must be strictly inside the authorized scan root boundary.
+/// - Target must still exist on disk (if not, marks record as missing in SQLite).
+/// - Target must be a regular file (not directory or special device).
+pub fn validate_file_for_access(
+    db: &Database,
+    file_id: i64,
+) -> Result<IndexedFile, String> {
+    let file = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Authorization denied: File #{file_id} is not indexed in the library."))?;
+
+    let root = db
+        .get_scan_root(file.scan_root_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Authorization denied: Scan root for file #{file_id} not found."))?;
+
+    if !root.enabled {
+        return Err(format!(
+            "Access denied: Containing folder '{}' is currently disabled in LibOne. Enable the folder to access its files.",
+            root.display_name
+        ));
     }
 
+    // Boundary check: normalized file path must begin with normalized root path
+    let norm_file = file.normalized_path.replace('/', "\\");
+    let norm_root = root.absolute_path.replace('/', "\\").to_lowercase();
+    let norm_root_trimmed = norm_root.trim_end_matches('\\');
+
+    if !norm_file.starts_with(norm_root_trimmed) {
+        return Err("Security violation: Target file path is outside authorized scan root boundaries.".to_string());
+    }
+
+    let p = Path::new(&file.absolute_path);
+    if !p.exists() {
+        let _ = db.touch_indexed_file(file_id, "missing");
+        return Err(format!(
+            "File unavailable: '{}' was not found on disk. The record has been marked as missing.",
+            file.absolute_path
+        ));
+    }
+
+    if !p.is_file() {
+        return Err(format!(
+            "Access denied: '{}' is a directory or special link, not a regular document.",
+            file.absolute_path
+        ));
+    }
+
+    Ok(file)
+}
+
+/// Safely open a file with the operating system's registered default application.
+/// NEVER executes via `cmd.exe` or shell command string interpolation.
+fn launch_file_safely(path_str: &str, ext: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        Command::new("cmd")
-            .args(["/c", "start", "", &file_path])
-            .spawn()
-            .map_err(|e| format!("Failed to open file with Windows default application: {e}"))?;
-        return Ok(());
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        let wide_path: Vec<u16> = OsStr::new(path_str)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let wide_op: Vec<u16> = OsStr::new("open")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut std::ffi::c_void,
+                lpOperation: *const u16,
+                lpFile: *const u16,
+                lpParameters: *const u16,
+                lpDirectory: *const u16,
+                nShowCmd: i32,
+            ) -> *mut std::ffi::c_void;
+        }
+
+        let ret = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                wide_op.as_ptr(),
+                wide_path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            )
+        };
+
+        let code = ret as usize;
+        if code <= 32 {
+            return Err(match code {
+                31 => format!("No application is associated with '.{ext}' files on this computer."),
+                2 => format!("File not found on disk: '{path_str}'"),
+                5 => "Access was denied by the operating system.".to_string(),
+                _ => format!("Windows failed to open file (code {code})."),
+            });
+        }
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        use std::process::Command;
-        let prog = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        Command::new(prog)
-            .arg(&file_path)
+        let prog = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        std::process::Command::new(prog)
+            .arg(path_str)
             .spawn()
             .map_err(|e| format!("Failed to open file: {e}"))?;
         Ok(())
     }
+}
+
+/// Open original file using the operating system's default application.
+/// Validates path against indexed records and enabled scan root before launching.
+#[tauri::command]
+pub fn open_original_file(
+    file_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let file = validate_file_for_access(&db, file_id)?;
+    launch_file_safely(&file.absolute_path, &file.extension)
+}
+
+/// Show original file in Windows File Explorer (or reveal containing folder).
+/// Uses native process argument passing (`explorer.exe /select,"<path>"`), never a shell.
+#[tauri::command]
+pub fn show_in_file_explorer(
+    file_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let file = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Access denied: File #{file_id} not indexed in library."))?;
+
+    let root = db
+        .get_scan_root(file.scan_root_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Scan root for file #{file_id} not found."))?;
+
+    if !root.enabled {
+        return Err(format!(
+            "Access denied: Containing scan root '{}' is disabled.",
+            root.display_name
+        ));
+    }
+
+    let p = Path::new(&file.absolute_path);
+    let target_exists = p.exists();
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        if target_exists {
+            Command::new("explorer.exe")
+                .arg(format!("/select,{}", file.absolute_path))
+                .spawn()
+                .map_err(|e| format!("Failed to launch File Explorer: {e}"))?;
+            Ok(())
+        } else {
+            let _ = db.touch_indexed_file(file_id, "missing");
+            if let Some(parent) = p.parent().filter(|par| par.exists()) {
+                Command::new("explorer.exe")
+                    .arg(parent.to_string_lossy().to_string())
+                    .spawn()
+                    .map_err(|e| format!("Failed to launch File Explorer: {e}"))?;
+                Err(format!(
+                    "File '{}' is missing on disk. Opened containing folder instead.",
+                    file.file_name
+                ))
+            } else {
+                Err(format!(
+                    "Neither the file nor its containing folder exists on disk: '{}'",
+                    file.absolute_path
+                ))
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let prog = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let reveal_target = if target_exists {
+            if cfg!(target_os = "macos") {
+                return std::process::Command::new("open")
+                    .args(["-R", &file.absolute_path])
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+            }
+            p.parent().unwrap_or(p).to_string_lossy().to_string()
+        } else if let Some(parent) = p.parent().filter(|par| par.exists()) {
+            let _ = db.touch_indexed_file(file_id, "missing");
+            parent.to_string_lossy().to_string()
+        } else {
+            return Err(format!("File does not exist: {}", file.absolute_path));
+        };
+
+        std::process::Command::new(prog)
+            .arg(reveal_target)
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {e}"))?;
+        Ok(())
+    }
+}
+
+/// Backwards-compatible file open command that validates against SQLite.
+#[tauri::command]
+pub fn open_file_in_default_app(
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Try finding by path in indexed records
+    let norm = file_path.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let file = db
+        .get_file_by_normalized_path(&norm)
+        .map_err(db_err)?
+        .ok_or_else(|| {
+            format!("Security refusal: Path '{file_path}' is not an authorized file in LibOne.")
+        })?;
+
+    let authorized_file = validate_file_for_access(&db, file.id)?;
+    launch_file_safely(&authorized_file.absolute_path, &authorized_file.extension)
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────
@@ -446,4 +676,217 @@ pub fn compute_file_hash(
     db.update_file_hash(file_id, &hash).map_err(db_err)?;
 
     Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_auth_dir(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "libone_auth_test_{}_{}_{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn test_auth_db(name: &str) -> (Database, PathBuf) {
+        let p = std::env::temp_dir().join(format!(
+            "libone_auth_db_{}_{}_{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        (Database::new(&p).unwrap(), p)
+    }
+
+    #[test]
+    fn test_authorization_succeeds_for_valid_indexed_file() {
+        let dir = temp_auth_dir("auth_ok");
+        let (db, db_dir) = test_auth_db("auth_ok");
+        let file_path = dir.join("valid_doc.pdf");
+        fs::write(&file_path, b"%PDF-1.4 sample content").unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Test Root").unwrap();
+        let new_file = crate::models::NewIndexedFile {
+            scan_root_id: root.id,
+            absolute_path: file_path.to_str().unwrap().to_string(),
+            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            file_name: "valid_doc.pdf".into(),
+            extension: "pdf".into(),
+            size_bytes: 23,
+            modified_at: None,
+            created_at_if_available: None,
+            content_hash_nullable: None,
+            file_id_nullable: None,
+            status: "indexed".into(),
+        };
+        let indexed = db.insert_indexed_file(&new_file).unwrap();
+
+        let res = validate_file_for_access(&db, indexed.id);
+        assert!(res.is_ok(), "Validation should succeed for a valid indexed file");
+        let validated = res.unwrap();
+        assert_eq!(validated.file_name, "valid_doc.pdf");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_authorization_rejects_unindexed_file() {
+        let (_db, db_dir) = test_auth_db("auth_unindexed");
+        let res = validate_file_for_access(&_db, 999999);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("not indexed in the library"));
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_authorization_rejects_disabled_scan_root() {
+        let dir = temp_auth_dir("auth_disabled");
+        let (db, db_dir) = test_auth_db("auth_disabled");
+        let file_path = dir.join("secret.docx");
+        fs::write(&file_path, b"content").unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Disabled Root").unwrap();
+        let new_file = crate::models::NewIndexedFile {
+            scan_root_id: root.id,
+            absolute_path: file_path.to_str().unwrap().to_string(),
+            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            file_name: "secret.docx".into(),
+            extension: "docx".into(),
+            size_bytes: 7,
+            modified_at: None,
+            created_at_if_available: None,
+            content_hash_nullable: None,
+            file_id_nullable: None,
+            status: "indexed".into(),
+        };
+        let indexed = db.insert_indexed_file(&new_file).unwrap();
+
+        // Disable root
+        db.remove_scan_root(root.id).unwrap();
+
+        let res = validate_file_for_access(&db, indexed.id);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("currently disabled"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_authorization_handles_missing_file_and_updates_status() {
+        let dir = temp_auth_dir("auth_missing");
+        let (db, db_dir) = test_auth_db("auth_missing");
+        let file_path = dir.join("deleted_doc.txt");
+        fs::write(&file_path, b"soon deleted").unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Missing Root").unwrap();
+        let new_file = crate::models::NewIndexedFile {
+            scan_root_id: root.id,
+            absolute_path: file_path.to_str().unwrap().to_string(),
+            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            file_name: "deleted_doc.txt".into(),
+            extension: "txt".into(),
+            size_bytes: 12,
+            modified_at: None,
+            created_at_if_available: None,
+            content_hash_nullable: None,
+            file_id_nullable: None,
+            status: "indexed".into(),
+        };
+        let indexed = db.insert_indexed_file(&new_file).unwrap();
+
+        // Delete from disk
+        fs::remove_file(&file_path).unwrap();
+
+        let res = validate_file_for_access(&db, indexed.id);
+        assert!(res.is_err(), "Access should fail for missing file");
+        assert!(res.unwrap_err().contains("marked as missing"));
+
+        // Check that database status was updated to missing
+        let updated = db.get_indexed_file(indexed.id).unwrap().unwrap();
+        assert_eq!(updated.status, "missing");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_authorization_rejects_directory_path() {
+        let dir = temp_auth_dir("auth_dir");
+        let (db, db_dir) = test_auth_db("auth_dir");
+        let sub = dir.join("subfolder");
+        fs::create_dir_all(&sub).unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Dir Root").unwrap();
+        let new_file = crate::models::NewIndexedFile {
+            scan_root_id: root.id,
+            absolute_path: sub.to_str().unwrap().to_string(),
+            normalized_path: sub.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            file_name: "subfolder".into(),
+            extension: "".into(),
+            size_bytes: 0,
+            modified_at: None,
+            created_at_if_available: None,
+            content_hash_nullable: None,
+            file_id_nullable: None,
+            status: "indexed".into(),
+        };
+        let indexed = db.insert_indexed_file(&new_file).unwrap();
+
+        let res = validate_file_for_access(&db, indexed.id);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("is a directory"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_authorization_rejects_path_traversal_outside_root() {
+        let dir = temp_auth_dir("auth_outside");
+        let other_dir = temp_auth_dir("other_dir");
+        let (db, db_dir) = test_auth_db("auth_outside");
+        let file_path = other_dir.join("outside.pdf");
+        fs::write(&file_path, b"outside content").unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Inside Root").unwrap();
+        let new_file = crate::models::NewIndexedFile {
+            scan_root_id: root.id,
+            absolute_path: file_path.to_str().unwrap().to_string(),
+            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            file_name: "outside.pdf".into(),
+            extension: "pdf".into(),
+            size_bytes: 15,
+            modified_at: None,
+            created_at_if_available: None,
+            content_hash_nullable: None,
+            file_id_nullable: None,
+            status: "indexed".into(),
+        };
+        let indexed = db.insert_indexed_file(&new_file).unwrap();
+
+        let res = validate_file_for_access(&db, indexed.id);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("outside authorized scan root"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&other_dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
 }

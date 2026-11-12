@@ -3,8 +3,11 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AppInfo,
+  FileDetail,
+  FileQueryParams,
   IndexedFile,
   LibraryExport,
+  PaginatedFiles,
   ScanOptions,
   ScanProgress,
   ScanRoot,
@@ -401,6 +404,103 @@ export async function listIndexedFiles(options?: {
     );
   }
   return result;
+}
+
+export async function queryIndexedFiles(
+  params: FileQueryParams
+): Promise<PaginatedFiles> {
+  if (isTauriEnvironment()) {
+    return await invoke<PaginatedFiles>("query_indexed_files", { params });
+  }
+
+  // Mock implementation for browser dev preview
+  let result = [...mockFiles];
+  if (params.root_id) result = result.filter((f) => f.scan_root_id === params.root_id);
+  if (params.status && params.status !== "all")
+    result = result.filter((f) => f.status === params.status);
+  if (params.extension && params.extension !== "all")
+    result = result.filter((f) => f.extension.toLowerCase() === params.extension?.toLowerCase());
+  if (params.query) {
+    const q = params.query.toLowerCase();
+    result = result.filter(
+      (f) =>
+        f.file_name.toLowerCase().includes(q) ||
+        f.absolute_path.toLowerCase().includes(q) ||
+        f.extension.toLowerCase().includes(q)
+    );
+  }
+
+  // Sorting
+  const sortBy = params.sort_by || "name";
+  const sortOrder = params.sort_order || "asc";
+  result.sort((a, b) => {
+    let cmp = 0;
+    if (sortBy === "name") cmp = a.file_name.localeCompare(b.file_name);
+    else if (sortBy === "path") cmp = a.normalized_path.localeCompare(b.normalized_path);
+    else if (sortBy === "extension") cmp = a.extension.localeCompare(b.extension);
+    else if (sortBy === "size") cmp = a.size_bytes - b.size_bytes;
+    else if (sortBy === "modified") cmp = (a.modified_at || "").localeCompare(b.modified_at || "");
+    else if (sortBy === "status") cmp = a.status.localeCompare(b.status);
+    return sortOrder === "desc" ? -cmp : cmp;
+  });
+
+  const total = result.length;
+  const page = Math.max(1, params.page || 1);
+  const pageSize = Math.min(200, Math.max(1, params.page_size || 25));
+  const offset = (page - 1) * pageSize;
+  const files = result.slice(offset, offset + pageSize);
+  const totalPages = total === 0 ? 1 : Math.ceil(total / pageSize);
+
+  return {
+    files,
+    total,
+    page,
+    page_size: pageSize,
+    total_pages: totalPages,
+  };
+}
+
+export async function getIndexedFileDetail(fileId: number): Promise<FileDetail> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileDetail>("get_indexed_file_detail", { fileId });
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found.`);
+  const root = mockRoots.find((r) => r.id === file.scan_root_id);
+  return {
+    file,
+    root_display_name: root?.display_name || "Unknown Root",
+    root_absolute_path: root?.absolute_path || "C:\\",
+    exists_on_disk: file.status !== "missing",
+  };
+}
+
+export async function getLibraryExtensions(): Promise<string[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<string[]>("get_library_extensions");
+  }
+  const set = new Set(mockFiles.map((f) => f.extension).filter(Boolean));
+  return Array.from(set).sort();
+}
+
+/** Open original file using Windows registered default application. */
+export async function openOriginalFile(fileId: number): Promise<void> {
+  if (isTauriEnvironment()) {
+    await invoke<void>("open_original_file", { fileId });
+    return;
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  alert(`[Dev Mode] Would open original file #${fileId} with default app:\n${file?.absolute_path}`);
+}
+
+/** Reveal original file in Windows File Explorer. */
+export async function showInFileExplorer(fileId: number): Promise<void> {
+  if (isTauriEnvironment()) {
+    await invoke<void>("show_in_file_explorer", { fileId });
+    return;
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  alert(`[Dev Mode] Would reveal file in File Explorer:\n${file?.absolute_path}`);
 }
 
 export async function openFileInDefaultApp(filePath: string): Promise<void> {

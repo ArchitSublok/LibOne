@@ -35,6 +35,32 @@ export interface IndexedFile {
   status: string;
 }
 
+export interface PaginatedFiles {
+  files: IndexedFile[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface FileQueryParams {
+  query?: string | null;
+  root_id?: number | null;
+  extension?: string | null;
+  status?: string | null;
+  sort_by?: "name" | "path" | "extension" | "size" | "modified" | "status" | null;
+  sort_order?: "asc" | "desc" | null;
+  page?: number | null;
+  page_size?: number | null;
+}
+
+export interface FileDetail {
+  file: IndexedFile;
+  root_display_name: string;
+  root_absolute_path: string;
+  exists_on_disk: boolean;
+}
+
 export interface ScanOptions {
   compute_hashes: boolean;
 }
