@@ -1,25 +1,42 @@
+// All field names here must exactly match the serde-serialised Rust structs.
+
 export interface ScanRoot {
   id: number;
-  path: string;
-  label: string;
-  added_at: string;
-  last_scanned_at: string | null;
+  /** Canonical, absolute path as stored (e.g. C:\Users\Alice\Documents). */
+  absolute_path: string;
+  /** User-visible name shown in the sidebar. */
+  display_name: string;
+  /** Whether LibOne is currently tracking this root. */
+  enabled: boolean;
+  created_at: string;
+  last_scan_started_at: string | null;
+  last_scan_completed_at: string | null;
+  /** "never_scanned" | "running" | "completed" | "cancelled" | "error" */
+  last_scan_status: string;
+  /** Count of non-missing indexed files. */
   file_count: number;
-  status: "ready" | "scanning" | "error" | string;
 }
 
 export interface IndexedFile {
   id: number;
   scan_root_id: number;
-  path: string;
-  filename: string;
+  absolute_path: string;
+  normalized_path: string;
+  file_name: string;
   extension: string;
   size_bytes: number;
-  modified_at_ms: number;
-  sha256_prefix: string | null;
-  status: "active" | "modified" | "missing" | "moved" | string;
-  first_seen_at: string;
+  modified_at: string | null;
+  created_at_if_available: string | null;
+  discovered_at: string;
   last_seen_at: string;
+  content_hash_nullable: string | null;
+  file_id_nullable: string | null;
+  /** "indexed" | "changed" | "missing" | "inaccessible" | "error" */
+  status: string;
+}
+
+export interface ScanOptions {
+  compute_hashes: boolean;
 }
 
 export interface ScanStats {
@@ -31,6 +48,25 @@ export interface ScanStats {
   moved: number;
   unchanged: number;
   duration_ms: number;
+}
+
+export interface ScanWarning {
+  path: string;
+  message: string;
+  code: string;
+}
+
+export interface ScanProgress {
+  root_id: number;
+  current_root: string;
+  current_directory: string;
+  directories_visited: number;
+  files_discovered: number;
+  files_indexed: number;
+  warnings: ScanWarning[];
+  state: "idle" | "running" | "completed" | "cancelled" | "error";
+  stats: ScanStats | null;
+  error_message: string | null;
 }
 
 export interface AppInfo {

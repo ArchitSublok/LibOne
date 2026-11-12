@@ -29,6 +29,7 @@ pub struct IndexedFile {
     pub discovered_at: String,
     pub last_seen_at: String,
     pub content_hash_nullable: Option<String>,
+    pub file_id_nullable: Option<String>,
     pub status: String,
 }
 
@@ -43,7 +44,15 @@ pub struct NewIndexedFile {
     pub modified_at: Option<String>,
     pub created_at_if_available: Option<String>,
     pub content_hash_nullable: Option<String>,
+    pub file_id_nullable: Option<String>,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScanOptions {
+    /// Whether to compute SHA-256 hashes during the scan. Default is false (only on demand).
+    #[serde(default)]
+    pub compute_hashes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +67,29 @@ pub struct ScanStats {
     pub duration_ms: u64,
 }
 
+/// Non-fatal warning emitted during scanning (e.g., locked file, symlink skipped, unreadable directory)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanWarning {
+    pub path: String,
+    pub message: String,
+    pub code: String,
+}
+
+/// Live incremental progress emitted to the frontend during scanning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanProgress {
+    pub root_id: i64,
+    pub current_root: String,
+    pub current_directory: String,
+    pub directories_visited: usize,
+    pub files_discovered: usize,
+    pub files_indexed: usize,
+    pub warnings: Vec<ScanWarning>,
+    pub state: String, // "idle", "running", "completed", "cancelled", "error"
+    pub stats: Option<ScanStats>,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInfo {
     pub app_name: String,
@@ -66,6 +98,7 @@ pub struct AppInfo {
     pub db_path: String,
     pub os: String,
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSummary {
     pub total_roots: usize,
@@ -73,6 +106,7 @@ pub struct ExportSummary {
     pub total_size_bytes: i64,
     pub export_timestamp: String,
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryExport {
     pub app: String,

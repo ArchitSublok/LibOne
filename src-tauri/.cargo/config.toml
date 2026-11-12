@@ -1,24 +1,30 @@
-# LibOne – Cargo build configuration for Windows (no MSVC install required).
+# LibOne – Cargo build configuration for Windows (D: drive self-contained).
 # Uses:
 #   - rust-lld.exe  (bundled with rustup's MSVC toolchain) as the linker
-#   - xwin-splatted Windows CRT + SDK libraries from ~/.xwin
-#   - clang-cl.exe  from the system LLVM installation (C:\Program Files\LLVM\bin)
-#   - clang-cl for C/C++ build scripts (e.g. vswhom-sys, libsqlite3-sys)
+#   - xwin-splatted Windows CRT + SDK libraries from D:\.xwin
+#   - clang-cl.exe  from system LLVM (C:\Program Files\LLVM\bin\clang-cl.exe)
+#   - Windows-bundled winsqlite3.lib from D:\.xwin\sqlite_local
+
+[build]
+target-dir = "D:\\LibOne\\src-tauri\\target"
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
 
 [env]
+PATH = "D:\\.xwin\\bin;C:\\Program Files\\LLVM\\bin"
 # Windows SDK and CRT library search paths for the MSVC linker
-LIB = "C:\\Users\\archi\\.xwin\\crt\\lib\\x86_64;C:\\Users\\archi\\.xwin\\sdk\\lib\\um\\x86_64;C:\\Users\\archi\\.xwin\\sdk\\lib\\ucrt\\x86_64"
+LIB = "D:\\.xwin\\crt\\lib\\x86_64;D:\\.xwin\\sdk\\lib\\um\\x86_64;D:\\.xwin\\sdk\\lib\\ucrt\\x86_64;D:\\.xwin\\sqlite_local"
 
 # Windows SDK headers for C/C++ build scripts (e.g. vswhom-sys)
-INCLUDE = "C:\\Users\\archi\\.xwin\\crt\\include;C:\\Users\\archi\\.xwin\\sdk\\include\\um;C:\\Users\\archi\\.xwin\\sdk\\include\\ucrt;C:\\Users\\archi\\.xwin\\sdk\\include\\shared"
+INCLUDE = "D:\\.xwin\\crt\\include;D:\\.xwin\\sdk\\include\\um;D:\\.xwin\\sdk\\include\\ucrt;D:\\.xwin\\sdk\\include\\shared"
 
 # Point cc-rs at clang-cl for C/C++ compilation
 CXX_x86_64_pc_windows_msvc = "C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
 CC_x86_64_pc_windows_msvc  = "C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
+RC_x86_64_pc_windows_msvc  = "C:\\Program Files\\LLVM\\bin\\llvm-rc.exe"
+RC                         = "C:\\Program Files\\LLVM\\bin\\llvm-rc.exe"
 
-# SQLite: use the Windows-bundled winsqlite3.lib (avoid needing to compile SQLite from source)
-SQLITE3_LIB_DIR     = "C:\\Users\\archi\\.xwin\\sdk\\lib\\um\\x86_64"
-SQLITE3_INCLUDE_DIR = "C:\\Users\\archi\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\libsqlite3-sys-0.30.1\\sqlite3"
+# SQLite pre-built library
+SQLITE3_LIB_DIR     = "D:\\.xwin\\sqlite_local"
+SQLITE3_INCLUDE_DIR = "D:\\.xwin\\sqlite_local"

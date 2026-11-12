@@ -1,10 +1,10 @@
-use std::sync::Mutex;
 use tauri::Manager;
 
 pub mod commands;
 pub mod db;
 pub mod models;
 pub mod scanner;
+pub mod validate;
 
 use commands::AppState;
 use db::Database;
@@ -23,9 +23,7 @@ pub fn run() {
             let database =
                 Database::new(app_data_dir).expect("Failed to initialize SQLite database");
 
-            app.manage(AppState {
-                db: Mutex::new(database),
-            });
+            app.manage(AppState::new(database));
 
             Ok(())
         })
@@ -33,12 +31,17 @@ pub fn run() {
             commands::get_app_info,
             commands::add_scan_root,
             commands::remove_scan_root,
+            commands::enable_scan_root,
             commands::list_scan_roots,
+            commands::start_scan,
+            commands::cancel_scan,
+            commands::get_scan_progress,
             commands::scan_root,
             commands::scan_all_roots,
             commands::list_indexed_files,
             commands::open_file_in_default_app,
             commands::export_library_metadata,
+            commands::compute_file_hash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibOne application");
