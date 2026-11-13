@@ -4,7 +4,19 @@ This document provides reproducible step-by-step test cases for manual validatio
 
 ---
 
-## 1. Test Environment Setup
+## 1. Execution Status
+
+* **Automated Test Suite**: **PASSED (34/34 tests passing)**
+  - Automated tests verify database migration, scan traversal, file identity, watcher debouncing, path authorization, and atomic JSON export.
+  - Command: `cargo test --manifest-path src-tauri\Cargo.toml --lib` (0 failures).
+  - TypeScript & Vite build: `npm run build` (0 type errors, production bundle generated).
+* **Manual Acceptance Testing**: **PENDING HUMAN EXECUTION**
+  - The 10 manual test cases in Section 3 represent interactive, end-to-end desktop GUI verification on Windows.
+  - In accordance with verification protocol, manual cases are strictly marked as unexecuted until a human tester runs the interactive scenarios and fills the sign-off sheet.
+
+---
+
+## 2. Test Environment Setup
 - **Operating System**: Windows 10 / 11 (64-bit)
 - **Filesystem**: NTFS (primary system or secondary internal drive)
 - **Node.js**: v18+ or v20+
@@ -13,7 +25,7 @@ This document provides reproducible step-by-step test cases for manual validatio
 
 ---
 
-## 2. Test Cases
+## 3. Test Cases
 
 ### TC-01: Application Bootstrap & Database Initialization
 * **Goal**: Verify that LibOne creates its local SQLite metadata database on first launch without errors.
@@ -176,7 +188,7 @@ This document provides reproducible step-by-step test cases for manual validatio
 
 ---
 
-## 3. Test Execution Summary Sheet
+## 4. Test Execution Summary Sheet
 
 | Test Case | Description | Pass / Fail | Executed By | Date | Remarks |
 |---|---|---|---|---|---|

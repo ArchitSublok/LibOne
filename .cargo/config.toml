@@ -1,0 +1,19 @@
+# LibOne – Cargo build configuration for Windows (D: drive self-contained).
+# Enables running cargo commands directly from D:\LibOne (repository root).
+
+[build]
+target-dir = "D:\\LibOne\\src-tauri\\target"
+
+[target.x86_64-pc-windows-msvc]
+linker = "C:\\Program Files\\LLVM\\bin\\lld-link.exe"
+
+[env]
+PATH = "D:\\.xwin\\bin;C:\\Program Files\\LLVM\\bin"
+LIB = "D:\\.xwin\\crt\\lib\\x86_64;D:\\.xwin\\sdk\\lib\\um\\x86_64;D:\\.xwin\\sdk\\lib\\ucrt\\x86_64;D:\\.xwin\\sqlite_local"
+INCLUDE = "D:\\.xwin\\crt\\include;D:\\.xwin\\sdk\\include\\um;D:\\.xwin\\sdk\\include\\ucrt;D:\\.xwin\\sdk\\include\\shared"
+CXX_x86_64_pc_windows_msvc = "C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
+CC_x86_64_pc_windows_msvc  = "C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
+RC_x86_64_pc_windows_msvc  = "C:\\Program Files\\LLVM\\bin\\llvm-rc.exe"
+RC                         = "C:\\Program Files\\LLVM\\bin\\llvm-rc.exe"
+SQLITE3_LIB_DIR            = "D:\\.xwin\\sqlite_local"
+SQLITE3_INCLUDE_DIR        = "D:\\.xwin\\sqlite_local"

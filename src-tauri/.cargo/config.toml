@@ -1,15 +1,15 @@
 # LibOne – Cargo build configuration for Windows (D: drive self-contained).
 # Uses:
-#   - rust-lld.exe  (bundled with rustup's MSVC toolchain) as the linker
+#   - lld-link.exe from system LLVM (C:\Program Files\LLVM\bin\lld-link.exe)
 #   - xwin-splatted Windows CRT + SDK libraries from D:\.xwin
-#   - clang-cl.exe  from system LLVM (C:\Program Files\LLVM\bin\clang-cl.exe)
+#   - clang-cl.exe from system LLVM (C:\Program Files\LLVM\bin\clang-cl.exe)
 #   - Windows-bundled winsqlite3.lib from D:\.xwin\sqlite_local
 
 [build]
 target-dir = "D:\\LibOne\\src-tauri\\target"
 
 [target.x86_64-pc-windows-msvc]
-linker = "rust-lld.exe"
+linker = "C:\\Program Files\\LLVM\\bin\\lld-link.exe"
 
 [env]
 PATH = "D:\\.xwin\\bin;C:\\Program Files\\LLVM\\bin"
