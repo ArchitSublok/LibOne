@@ -12,15 +12,17 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::db::Database;
 use crate::models::{
     AppInfo, FileDetail, FileQueryParams, IndexedFile, LibraryExport, PaginatedFiles, ScanOptions,
-    ScanProgress, ScanRoot, ScanStats,
+    ScanProgress, ScanRoot, ScanStats, WatcherOverallStatus,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
+use crate::watcher::WatcherManager;
 
 pub struct AppState {
     pub db: Mutex<Database>,
     pub active_scans: Mutex<HashMap<i64, Arc<AtomicBool>>>,
     pub scan_progress: Mutex<HashMap<i64, ScanProgress>>,
+    pub watcher_manager: Mutex<WatcherManager>,
 }
 
 impl AppState {
@@ -29,6 +31,7 @@ impl AppState {
             db: Mutex::new(database),
             active_scans: Mutex::new(HashMap::new()),
             scan_progress: Mutex::new(HashMap::new()),
+            watcher_manager: Mutex::new(WatcherManager::new()),
         }
     }
 }
@@ -93,55 +96,88 @@ pub fn add_scan_root(
                 .to_string()
         });
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let (root, db_clone) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
 
-    if let Some(existing) = db.get_scan_root_by_path(canonical_str).map_err(db_err)? {
-        if existing.enabled {
-            return Err(ValidationError::Duplicate.to_string());
-        }
-        db.enable_scan_root(existing.id, &name).map_err(db_err)?;
-        return db
-            .get_scan_root(existing.id)
-            .map_err(db_err)?
-            .ok_or_else(|| "Root disappeared after re-enable".to_string());
+        let r = if let Some(existing) = db.get_scan_root_by_path(canonical_str).map_err(db_err)? {
+            if existing.enabled {
+                return Err(ValidationError::Duplicate.to_string());
+            }
+            db.enable_scan_root(existing.id, &name).map_err(db_err)?;
+            db.get_scan_root(existing.id)
+                .map_err(db_err)?
+                .ok_or_else(|| "Root disappeared after re-enable".to_string())?
+        } else {
+            db.add_scan_root(canonical_str, &name).map_err(db_err)?
+        };
+        (r, db.clone())
+    };
+
+    if let Ok(mut wm) = state.watcher_manager.lock() {
+        wm.start_watching_root(&root, db_clone, app);
     }
 
-    db.add_scan_root(canonical_str, &name).map_err(db_err)
+    Ok(root)
 }
 
 #[tauri::command]
 pub fn remove_scan_root(root_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.remove_scan_root(root_id).map_err(db_err)
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.remove_scan_root(root_id).map_err(db_err)?;
+    }
+    if let Ok(mut wm) = state.watcher_manager.lock() {
+        wm.stop_watching_root(root_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub fn enable_scan_root(
     root_id: i64,
     display_name: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ScanRoot, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let (root, db_clone) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
 
-    let existing = db
-        .get_scan_root(root_id)
-        .map_err(db_err)?
-        .ok_or_else(|| format!("No scan root with id {root_id}"))?;
+        let existing = db
+            .get_scan_root(root_id)
+            .map_err(db_err)?
+            .ok_or_else(|| format!("No scan root with id {root_id}"))?;
 
-    let name = display_name
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(existing.display_name);
+        let name = display_name
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(existing.display_name);
 
-    db.enable_scan_root(root_id, &name).map_err(db_err)?;
-    db.get_scan_root(root_id)
-        .map_err(db_err)?
-        .ok_or_else(|| "Root disappeared after enable".to_string())
+        db.enable_scan_root(root_id, &name).map_err(db_err)?;
+        let r = db
+            .get_scan_root(root_id)
+            .map_err(db_err)?
+            .ok_or_else(|| "Root disappeared after enable".to_string())?;
+        (r, db.clone())
+    };
+
+    if let Ok(mut wm) = state.watcher_manager.lock() {
+        wm.start_watching_root(&root, db_clone, app);
+    }
+
+    Ok(root)
 }
 
 #[tauri::command]
 pub fn list_scan_roots(state: State<'_, AppState>) -> Result<Vec<ScanRoot>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.list_scan_roots().map_err(db_err)
+}
+
+#[tauri::command]
+pub fn get_watcher_status(
+    state: State<'_, AppState>,
+) -> Result<WatcherOverallStatus, String> {
+    let wm = state.watcher_manager.lock().map_err(|e| e.to_string())?;
+    Ok(wm.get_overall_status())
 }
 
 // ── Scanning with real-time progress & cancellation ───────────────────────────

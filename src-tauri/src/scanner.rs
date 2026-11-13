@@ -131,14 +131,14 @@ pub fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String, std::io::E
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn normalized_path(path: &Path) -> String {
+pub fn normalized_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('/', "\\")
         .trim_end_matches('\\')
         .to_lowercase()
 }
 
-fn timestamp(time: SystemTime) -> Option<String> {
+pub fn timestamp(time: SystemTime) -> Option<String> {
     time.duration_since(UNIX_EPOCH)
         .ok()
         .map(|d| chrono::DateTime::<chrono::Utc>::from(UNIX_EPOCH + d).to_rfc3339())

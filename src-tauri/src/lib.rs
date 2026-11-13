@@ -5,6 +5,7 @@ pub mod db;
 pub mod models;
 pub mod scanner;
 pub mod validate;
+pub mod watcher;
 
 use commands::AppState;
 use db::Database;
@@ -23,7 +24,18 @@ pub fn run() {
             let database =
                 Database::new(app_data_dir).expect("Failed to initialize SQLite database");
 
-            app.manage(AppState::new(database));
+            let app_state = AppState::new(database.clone());
+
+            // Initialize watchers for all enabled scan roots while app runs
+            if let Ok(roots) = database.list_scan_roots() {
+                if let Ok(mut wm) = app_state.watcher_manager.lock() {
+                    for root in roots.into_iter().filter(|r| r.enabled) {
+                        wm.start_watching_root(&root, database.clone(), app.handle().clone());
+                    }
+                }
+            }
+
+            app.manage(app_state);
 
             Ok(())
         })
@@ -47,6 +59,7 @@ pub fn run() {
             commands::open_file_in_default_app,
             commands::export_library_metadata,
             commands::compute_file_hash,
+            commands::get_watcher_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibOne application");

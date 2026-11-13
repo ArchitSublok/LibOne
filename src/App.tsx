@@ -21,6 +21,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Activity,
 } from "lucide-react";
 import {
   AppInfo,
@@ -29,12 +30,16 @@ import {
   LibraryExport,
   PaginatedFiles,
   ScanRoot,
+  WatcherOverallStatus,
 } from "./types";
 import {
   exportLibraryMetadata,
   getAppInfo,
   getIndexedFileDetail,
   getLibraryExtensions,
+  getWatcherStatus,
+  listenLibraryUpdated,
+  listenWatcherStatus,
   listScanRoots,
   openOriginalFile,
   promptSaveExportPath,
@@ -89,6 +94,10 @@ export const App: React.FC = () => {
   const [scanScreenOpen, setScanScreenOpen] = useState(false);
   const [scanScreenRootId, setScanScreenRootId] = useState<number | null>(null);
 
+  // ── Watcher state ─────────────────────────────────────────────────────────
+  const [watcherStatus, setWatcherStatus] = useState<WatcherOverallStatus | null>(null);
+  const [showWatcherPopover, setShowWatcherPopover] = useState(false);
+
   // ── Export modal ──────────────────────────────────────────────────────────
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportData, setExportData] = useState<LibraryExport | null>(null);
@@ -102,6 +111,34 @@ export const App: React.FC = () => {
       .catch((e) => console.error("Failed to load app info", e));
     loadRoots();
     loadExtensions();
+
+    // Initial watcher status
+    getWatcherStatus()
+      .then(setWatcherStatus)
+      .catch((e) => console.warn("Failed to get watcher status", e));
+
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenUpdated: (() => void) | undefined;
+
+    listenWatcherStatus((status) => {
+      setWatcherStatus(status);
+    }).then((fn) => {
+      unlistenStatus = fn;
+    });
+
+    listenLibraryUpdated(() => {
+      // Background watcher sync completed: refresh file list & extensions silently
+      loadExtensions();
+      loadFiles();
+      loadRoots();
+    }).then((fn) => {
+      unlistenUpdated = fn;
+    });
+
+    return () => {
+      if (unlistenStatus) unlistenStatus();
+      if (unlistenUpdated) unlistenUpdated();
+    };
   }, []);
 
   // When filters or sorting change, reset to page 1
@@ -131,6 +168,7 @@ export const App: React.FC = () => {
     try {
       const list = await listScanRoots();
       setRoots(list);
+      getWatcherStatus().then(setWatcherStatus).catch(() => {});
     } catch (e: any) {
       setRootsError(e?.message ?? String(e));
     } finally {
@@ -354,6 +392,120 @@ export const App: React.FC = () => {
               Local-first document library for Windows
             </div>
           </div>
+        </div>
+
+        {/* ── Live File-System Watcher Status Pill ────────────────────────── */}
+        <div className="watcher-indicator-container">
+          <button
+            type="button"
+            className={`watcher-indicator-pill ${
+              watcherStatus?.is_refreshing || watcherStatus?.is_coalescing
+                ? "syncing"
+                : watcherStatus?.root_statuses.some((r) => r.error_message)
+                ? "error"
+                : watcherStatus?.is_watching && (watcherStatus.watched_roots_count ?? 0) > 0
+                ? "live"
+                : "idle"
+            }`}
+            onClick={() => setShowWatcherPopover(!showWatcherPopover)}
+            title="Click to view file-system watcher status"
+          >
+            {watcherStatus?.is_refreshing || watcherStatus?.is_coalescing ? (
+              <>
+                <RefreshCw size={12} className="spin" />
+                <span>Syncing changes…</span>
+              </>
+            ) : watcherStatus?.root_statuses.some((r) => r.error_message) ? (
+              <>
+                <AlertTriangle size={12} className="text-warning" />
+                <span>Watcher alert</span>
+              </>
+            ) : watcherStatus?.is_watching && (watcherStatus.watched_roots_count ?? 0) > 0 ? (
+              <>
+                <span className="live-dot" />
+                <span>
+                  Watching {watcherStatus.watched_roots_count} folder
+                  {watcherStatus.watched_roots_count === 1 ? "" : "s"}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="idle-dot" />
+                <span>Watcher idle</span>
+              </>
+            )}
+          </button>
+
+          {showWatcherPopover && (
+            <div className="watcher-popover">
+              <div className="watcher-popover-header">
+                <div className="watcher-popover-title">
+                  <Activity size={14} /> File-System Watcher
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon"
+                  onClick={() => setShowWatcherPopover(false)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="watcher-popover-body">
+                <div className="watcher-stat-row">
+                  <span className="watcher-stat-label">Status</span>
+                  <span className="watcher-stat-val">
+                    {watcherStatus?.is_refreshing
+                      ? "Refreshing library…"
+                      : watcherStatus?.is_coalescing
+                      ? "Coalescing file events…"
+                      : watcherStatus?.is_watching && (watcherStatus.watched_roots_count ?? 0) > 0
+                      ? "Monitoring for changes"
+                      : "Inactive"}
+                  </span>
+                </div>
+                <div className="watcher-stat-row">
+                  <span className="watcher-stat-label">Last sync</span>
+                  <span className="watcher-stat-val">
+                    {watcherStatus?.last_refreshed_at
+                      ? formatDate(watcherStatus.last_refreshed_at)
+                      : "None yet"}
+                  </span>
+                </div>
+
+                <div className="watcher-roots-list-header">Watched Roots</div>
+                <div className="watcher-roots-list">
+                  {!watcherStatus?.root_statuses || watcherStatus.root_statuses.length === 0 ? (
+                    <div className="watcher-root-empty">No roots currently watched</div>
+                  ) : (
+                    watcherStatus.root_statuses.map((r) => (
+                      <div key={r.root_id} className="watcher-root-item">
+                        <div className="watcher-root-path" title={r.path}>
+                          {r.path}
+                        </div>
+                        <div className="watcher-root-badges">
+                          {r.error_message ? (
+                            <span className="badge badge-error" title={r.error_message}>
+                              Error
+                            </span>
+                          ) : r.active ? (
+                            <span className="badge badge-success">Active</span>
+                          ) : (
+                            <span className="badge badge-secondary">Paused</span>
+                          )}
+                        </div>
+                        {r.error_message && (
+                          <div className="watcher-root-error">{r.error_message}</div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="watcher-popover-footer">
+                  Debounces bursts (500ms window). Excludes symlinks, junctions, and build artifacts.
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="header-actions">

@@ -200,3 +200,48 @@ To guarantee safety and prevent command injection or execution of malicious batc
 ### 7.4 Document Privacy
 - LibOne displays and queries filesystem metadata only (paths, sizes, dates, hashes, status).
 - Document contents are never loaded into memory for previewing, and are never transmitted across IPC or external networks.
+
+---
+
+## 8. File-System Watcher & Live Sync Architecture
+
+### 8.1 Watcher Lifecycle
+- **Active only while running**: File-system watching runs strictly within the LibOne process lifetime using the `notify` (v6.1) crate backed by Windows `ReadDirectoryChangesW`.
+- **Dynamic root management**: On application startup, LibOne queries all `enabled` scan roots and registers watchers.
+  - Enabling or adding a scan root starts its watcher thread immediately.
+  - Disabling or removing a scan root aborts its watcher thread and releases Windows file-system handles.
+  - When LibOne shuts down, dropping `WatcherManager` cleanly terminates all watcher threads.
+- **Independence from manual scanning**: Watcher failures are isolated; manual scans remain fully functional regardless of watcher health.
+
+### 8.2 Event Coalescing & Debouncing
+- High-frequency file operations (e.g., git checkouts, compiling, downloading, multi-file extract) can generate hundreds of events per second.
+- LibOne uses an event coalescing loop with two thresholds:
+  1. **500 ms Quiet Window**: After receiving a file-system event, LibOne waits 500 ms for subsequent events to settle.
+  2. **2,500 ms Maximum Window**: If events continue arriving indefinitely, a refresh triggers after 2.5 seconds to prevent starvation.
+- While coalescing, the UI displays a subtle `Syncing changes…` indicator. Once coalescing finishes, a refresh executes in the background and emits a `library-updated` event so the frontend refreshes automatically.
+
+### 8.3 Targeted Refresh vs. Rescan Fallback
+When coalescing completes, LibOne determines the safest refresh strategy:
+1. **Targeted Refresh**:
+   - Used when the batch contains **<= 50 regular file changes** and no directory modifications.
+   - **Created/Modified**: Inspects file metadata on disk (size, modified time, NTFS file ID) and updates the database row incrementally.
+   - **Deleted**: Safely updates the SQLite file status to `missing` rather than deleting the historical record.
+   - **Renamed**: Correlates the old and new file paths via NTFS file identity (`BY_HANDLE_FILE_INFORMATION`). If matched, the existing record is updated in place.
+2. **Safe Rescan Fallback**:
+   - Triggered when:
+     - The event batch contains more than 50 files.
+     - A directory was created, renamed, or deleted.
+     - The OS buffer experienced an overflow or ambiguous event sequence.
+   - Calls the core incremental scanner (`scanner::scan_folder_with_progress`), cleanly reconciling the root in SQLite.
+
+### 8.4 Boundary Safety & Exclusion Rules
+- **Symlinks & Junctions**: Excluded from event processing. Events originating from reparse points outside the target root are rejected.
+- **Ignored Directories**: Ignores changes within `.git`, `node_modules`, `target`, `dist`, `build`, and LibOne's own AppData database directory.
+- **Temporary Files**: Ignores common Office locking and temporary swap files (`~$*`, `*.tmp`, `*.swp`).
+
+### 8.5 Honest Watcher Limitations
+1. **Network Shares (SMB/CIFS)**: Depending on server configuration and Windows client cache settings, remote network shares may fail to emit `ReadDirectoryChangesW` events. Users should use manual scans for network locations.
+2. **Drive Unmounting**: If an external USB drive or secondary hard drive is detached while LibOne is watching it, the OS watcher emits an I/O error. LibOne catches this, records the error in the per-root status, and displays a non-intrusive warning badge in the UI without crashing.
+3. **Atomic Replace Patterns**: When editors create a temporary file, delete the target, and rename the temporary file over the target, intermediate delete events can be coalesced with create events. The debounce window minimizes transient flickers, but rapid successive saves may momentarily appear as a new record if NTFS assigns a fresh file ID.
+4. **Coalesce Latency**: File changes are deliberately delayed by 500 ms to preserve CPU and battery life on laptop devices.
+

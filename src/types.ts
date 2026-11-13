@@ -61,6 +61,23 @@ export interface FileDetail {
   exists_on_disk: boolean;
 }
 
+export interface WatcherRootStatus {
+  root_id: number;
+  path: string;
+  active: boolean;
+  last_event_at: string | null;
+  error_message: string | null;
+}
+
+export interface WatcherOverallStatus {
+  is_watching: boolean;
+  watched_roots_count: number;
+  is_coalescing: boolean;
+  is_refreshing: boolean;
+  last_refreshed_at: string | null;
+  root_statuses: WatcherRootStatus[];
+}
+
 export interface ScanOptions {
   compute_hashes: boolean;
 }

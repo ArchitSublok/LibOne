@@ -12,6 +12,7 @@ import {
   ScanProgress,
   ScanRoot,
   ScanStats,
+  WatcherOverallStatus,
 } from "../types";
 
 // ── Environment detection ────────────────────────────────────────────────────
@@ -563,3 +564,48 @@ export async function computeFileHash(fileId: number): Promise<string> {
   }
   return hash;
 }
+
+// ── Watcher API & Event Subscriptions ─────────────────────────────────────────
+
+export async function getWatcherStatus(): Promise<WatcherOverallStatus> {
+  if (isTauriEnvironment()) {
+    return await invoke<WatcherOverallStatus>("get_watcher_status");
+  }
+  return {
+    is_watching: true,
+    watched_roots_count: mockRoots.filter((r) => r.enabled).length,
+    is_coalescing: false,
+    is_refreshing: false,
+    last_refreshed_at: new Date().toISOString(),
+    root_statuses: mockRoots.map((r) => ({
+      root_id: r.id,
+      path: r.absolute_path,
+      active: r.enabled,
+      last_event_at: null,
+      error_message: null,
+    })),
+  };
+}
+
+export async function listenWatcherStatus(
+  callback: (status: WatcherOverallStatus) => void
+): Promise<UnlistenFn> {
+  if (isTauriEnvironment()) {
+    return await listen<WatcherOverallStatus>("watcher-status", (event) => {
+      callback(event.payload);
+    });
+  }
+  return () => {};
+}
+
+export async function listenLibraryUpdated(
+  callback: () => void
+): Promise<UnlistenFn> {
+  if (isTauriEnvironment()) {
+    return await listen("library-updated", () => {
+      callback();
+    });
+  }
+  return () => {};
+}
+

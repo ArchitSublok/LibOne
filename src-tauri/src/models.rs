@@ -77,6 +77,25 @@ pub struct FileDetail {
     pub exists_on_disk: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatcherRootStatus {
+    pub root_id: i64,
+    pub path: String,
+    pub active: bool,
+    pub last_event_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WatcherOverallStatus {
+    pub is_watching: bool,
+    pub watched_roots_count: usize,
+    pub is_coalescing: bool,
+    pub is_refreshing: bool,
+    pub last_refreshed_at: Option<String>,
+    pub root_statuses: Vec<WatcherRootStatus>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScanOptions {
     /// Whether to compute SHA-256 hashes during the scan. Default is false (only on demand).

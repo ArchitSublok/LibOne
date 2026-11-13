@@ -23,6 +23,7 @@ walkdir = "2"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
+notify = "6.1.1"
 
 [profile.release]
 codegen-units = 1
