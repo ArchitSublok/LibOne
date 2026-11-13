@@ -6,7 +6,7 @@
 #   - Windows-bundled winsqlite3.lib from D:\.xwin\sqlite_local
 
 [build]
-target-dir = "D:\\LibOne\\src-tauri\\target"
+target-dir = "D:\\LibOne\\.cargo-target"
 
 [target.x86_64-pc-windows-msvc]
 linker = "C:\\Program Files\\LLVM\\bin\\lld-link.exe"

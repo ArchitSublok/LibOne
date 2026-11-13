@@ -11,6 +11,10 @@ pnpm-debug.log*
 # Rust / Cargo build artifacts
 target/
 src-tauri/target/
+.cargo-target/
+.cargo-home/
+.npm-cache/
+.tmp/
 **/*.rs.bk
 
 # Downloaded Windows SDK/build-tool cache (may contain third-party credentials)

@@ -2,7 +2,7 @@
 # Enables running cargo commands directly from D:\LibOne (repository root).
 
 [build]
-target-dir = "D:\\LibOne\\src-tauri\\target"
+target-dir = "D:\\LibOne\\.cargo-target"
 
 [target.x86_64-pc-windows-msvc]
 linker = "C:\\Program Files\\LLVM\\bin\\lld-link.exe"
