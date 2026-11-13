@@ -245,3 +245,33 @@ When coalescing completes, LibOne determines the safest refresh strategy:
 3. **Atomic Replace Patterns**: When editors create a temporary file, delete the target, and rename the temporary file over the target, intermediate delete events can be coalesced with create events. The debounce window minimizes transient flickers, but rapid successive saves may momentarily appear as a new record if NTFS assigns a fresh file ID.
 4. **Coalesce Latency**: File changes are deliberately delayed by 500 ms to preserve CPU and battery life on laptop devices.
 
+---
+
+## 9. Portable Metadata Export Architecture
+
+### 9.1 Self-Contained Versioned Snapshot
+- **Format Version `1.0.0`**: Exports carry a dedicated `format_version` attribute conforming to semantic versioning guidelines documented in `EXPORT_FORMAT.md`.
+- **Complete Library Metadata**: Includes top-level application metadata, aggregate summaries (`total_roots`, `total_files`, `total_size_bytes`), complete scan root definitions, and all indexed document file entries with their statuses, timestamps, sizes, NTFS identities, and computed hashes.
+- **Strictly No Document Content**: Under no circumstances does the export engine read or embed file payload bytes. The original documents remain completely untouched on disk.
+
+### 9.2 Validation Pipeline
+Before serializing or persisting any export to disk, the backend runs `validate_export`:
+1. **Header Checks**: Asserts that `format_version`, `app`, `version`, and `exported_at` are present and non-empty.
+2. **Integrity Validation**: Verifies that `summary.total_roots == scan_roots.len()` and `summary.total_files == files.len()`.
+3. If any assertion fails, the operation aborts before performing filesystem writes, returning a clear error to the UI.
+
+### 9.3 Atomic Safe-Write Guarantee
+Writing metadata snapshots can fail if the user disconnects a drive, runs out of disk space, or encounters a power disruption. To prevent partial or corrupt JSON files:
+- The backend writes the serialized JSON to a hidden sibling file (`.libone-export-<nanos>.tmp`) located in the same target folder.
+- Once the write completes successfully, LibOne performs an atomic filesystem rename (`std::fs::rename`) into the final target filename.
+- If writing or renaming fails, the temporary file is removed immediately and the original file (if one existed) remains intact.
+
+### 9.4 Local Storage Transparency & Settings
+- The application exposes a dedicated **Settings & Library Storage** screen detailing:
+  - Exact path to the local SQLite database (`<AppData>\libone.db`).
+  - Path to the application data root directory.
+  - Active operating system and version.
+  - Architecture guarantees: original files remain read-only; zero cloud synchronization or external uploads; metadata-only index.
+- No cloud backups, background synchronization, or automatic external transmissions are implemented. Users retain complete local custody over all data.
+
+

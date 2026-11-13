@@ -128,6 +128,7 @@ export interface ExportSummary {
 }
 
 export interface LibraryExport {
+  format_version: string;
   app: string;
   version: string;
   exported_at: string;

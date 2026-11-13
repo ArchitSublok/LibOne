@@ -663,6 +663,80 @@ pub fn open_file_in_default_app(
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
+/// Validates that a LibraryExport is well-formed before serialization.
+fn validate_export(export: &LibraryExport) -> Result<(), String> {
+    if export.format_version.is_empty() {
+        return Err("Export validation failed: missing format_version".into());
+    }
+    if export.app.is_empty() {
+        return Err("Export validation failed: missing app name".into());
+    }
+    if export.version.is_empty() {
+        return Err("Export validation failed: missing app version".into());
+    }
+    if export.exported_at.is_empty() {
+        return Err("Export validation failed: missing export timestamp".into());
+    }
+    if export.summary.total_roots != export.scan_roots.len() {
+        return Err(format!(
+            "Export validation failed: summary total_roots ({}) does not match scan_roots length ({})",
+            export.summary.total_roots,
+            export.scan_roots.len()
+        ));
+    }
+    if export.summary.total_files != export.files.len() {
+        return Err(format!(
+            "Export validation failed: summary total_files ({}) does not match files length ({})",
+            export.summary.total_files,
+            export.files.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Writes JSON to a temporary file next to the target, then atomically renames it.
+/// This prevents partial/corrupt files if the process is interrupted during writing.
+fn atomic_write_json(target_path: &str, json: &str) -> Result<(), String> {
+    let target = PathBuf::from(target_path);
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Cannot determine parent directory for '{target_path}'"))?;
+
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory '{}': {e}", parent.display()))?;
+    }
+
+    // Write to a temporary file in the same directory (same filesystem for rename)
+    let tmp_name = format!(
+        ".libone-export-{}.tmp",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let tmp_path = parent.join(&tmp_name);
+
+    std::fs::write(&tmp_path, json).map_err(|e| {
+        format!(
+            "Failed to write temporary export file '{}': {e}",
+            tmp_path.display()
+        )
+    })?;
+
+    // Atomic rename (on the same filesystem, this is atomic on NTFS and most POSIX)
+    if let Err(e) = std::fs::rename(&tmp_path, &target) {
+        // Rename failed — clean up temp file and report
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!(
+            "Failed to finalize export file '{}': {e}",
+            target_path
+        ));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn export_library_metadata(
     target_file_path: Option<String>,
@@ -673,11 +747,13 @@ pub fn export_library_metadata(
         .export_library()
         .map_err(|e| format!("Failed to export library metadata: {e}"))?;
 
+    // Validate the export before serialization
+    validate_export(&export_data)?;
+
     if let Some(target) = target_file_path {
         let json = serde_json::to_string_pretty(&export_data)
             .map_err(|e| format!("Serialization error: {e}"))?;
-        std::fs::write(&target, json)
-            .map_err(|e| format!("Failed to write export to '{target}': {e}"))?;
+        atomic_write_json(&target, &json)?;
     }
 
     Ok(export_data)
@@ -923,6 +999,166 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&other_dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    // ── Export tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_export_validation_passes_for_valid_export() {
+        let export = LibraryExport {
+            format_version: "1.0.0".into(),
+            app: "LibOne".into(),
+            version: "0.1.0".into(),
+            exported_at: "2026-01-01T00:00:00Z".into(),
+            summary: crate::models::ExportSummary {
+                total_roots: 0,
+                total_files: 0,
+                total_size_bytes: 0,
+                export_timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+            scan_roots: vec![],
+            files: vec![],
+        };
+        assert!(validate_export(&export).is_ok());
+    }
+
+    #[test]
+    fn test_export_validation_fails_missing_format_version() {
+        let export = LibraryExport {
+            format_version: "".into(),
+            app: "LibOne".into(),
+            version: "0.1.0".into(),
+            exported_at: "2026-01-01T00:00:00Z".into(),
+            summary: crate::models::ExportSummary {
+                total_roots: 0,
+                total_files: 0,
+                total_size_bytes: 0,
+                export_timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+            scan_roots: vec![],
+            files: vec![],
+        };
+        let err = validate_export(&export).unwrap_err();
+        assert!(err.contains("format_version"));
+    }
+
+    #[test]
+    fn test_export_validation_fails_mismatched_counts() {
+        let export = LibraryExport {
+            format_version: "1.0.0".into(),
+            app: "LibOne".into(),
+            version: "0.1.0".into(),
+            exported_at: "2026-01-01T00:00:00Z".into(),
+            summary: crate::models::ExportSummary {
+                total_roots: 5, // doesn't match scan_roots.len() == 0
+                total_files: 0,
+                total_size_bytes: 0,
+                export_timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+            scan_roots: vec![],
+            files: vec![],
+        };
+        let err = validate_export(&export).unwrap_err();
+        assert!(err.contains("total_roots"));
+    }
+
+    #[test]
+    fn test_export_json_schema_contains_required_fields() {
+        let (db, db_dir) = test_auth_db("export_schema");
+
+        let export = db.export_library().unwrap();
+        let json_str = serde_json::to_string_pretty(&export).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Verify top-level fields
+        assert!(parsed.get("format_version").is_some(), "missing format_version");
+        assert!(parsed.get("app").is_some(), "missing app");
+        assert!(parsed.get("version").is_some(), "missing version");
+        assert!(parsed.get("exported_at").is_some(), "missing exported_at");
+        assert!(parsed.get("summary").is_some(), "missing summary");
+        assert!(parsed.get("scan_roots").is_some(), "missing scan_roots");
+        assert!(parsed.get("files").is_some(), "missing files");
+
+        // Verify summary sub-fields
+        let summary = parsed.get("summary").unwrap();
+        assert!(summary.get("total_roots").is_some());
+        assert!(summary.get("total_files").is_some());
+        assert!(summary.get("total_size_bytes").is_some());
+        assert!(summary.get("export_timestamp").is_some());
+
+        // format_version should be "1.0.0"
+        assert_eq!(parsed["format_version"].as_str().unwrap(), "1.0.0");
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_atomic_write_creates_valid_file() {
+        let dir = temp_auth_dir("atomic_write");
+        let target = dir.join("export.json");
+        let json = r#"{"format_version":"1.0.0","app":"LibOne"}"#;
+
+        let res = atomic_write_json(target.to_str().unwrap(), json);
+        assert!(res.is_ok());
+
+        let contents = fs::read_to_string(&target).unwrap();
+        assert_eq!(contents, json);
+
+        // Ensure no temp files remain
+        let remaining: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(remaining.len(), 1, "Only the target file should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_atomic_write_fails_for_readonly_directory() {
+        // Writing to a non-existent drive path should fail
+        let bad_path = "Z:\\non_existent_drive\\export.json";
+        let res = atomic_write_json(bad_path, "{}");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_export_roundtrip_deserializes() {
+        let (db, db_dir) = test_auth_db("export_roundtrip");
+        let dir = temp_auth_dir("export_rt_files");
+        let file_path = dir.join("sample.pdf");
+        fs::write(&file_path, b"PDF content").unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "RT Root").unwrap();
+        let new_file = crate::models::NewIndexedFile {
+            scan_root_id: root.id,
+            absolute_path: file_path.to_str().unwrap().to_string(),
+            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            file_name: "sample.pdf".into(),
+            extension: "pdf".into(),
+            size_bytes: 11,
+            modified_at: None,
+            created_at_if_available: None,
+            content_hash_nullable: None,
+            file_id_nullable: None,
+            status: "indexed".into(),
+        };
+        db.insert_indexed_file(&new_file).unwrap();
+
+        let export = db.export_library().unwrap();
+        let json_str = serde_json::to_string_pretty(&export).unwrap();
+
+        // Deserialize back and verify round-trip
+        let deserialized: LibraryExport = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.format_version, "1.0.0");
+        assert_eq!(deserialized.app, "LibOne");
+        assert_eq!(deserialized.summary.total_roots, 1);
+        assert_eq!(deserialized.summary.total_files, 1);
+        assert_eq!(deserialized.files[0].file_name, "sample.pdf");
+        assert_eq!(deserialized.scan_roots[0].display_name, "RT Root");
+
+        let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
     }
 }

@@ -523,6 +523,7 @@ export async function exportLibraryMetadata(
 
   const totalSize = mockFiles.reduce((acc, f) => acc + f.size_bytes, 0);
   return {
+    format_version: "1.0.0",
     app: "LibOne",
     version: "0.1.0",
     exported_at: new Date().toISOString(),

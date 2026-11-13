@@ -22,6 +22,7 @@ import {
   ArrowUp,
   ArrowDown,
   Activity,
+  Settings,
 } from "lucide-react";
 import {
   AppInfo,
@@ -50,6 +51,7 @@ import {
 import { ScanRootsPanel } from "./components/ScanRootsPanel";
 import { ScanScreen } from "./components/ScanScreen";
 import { FileDetailModal } from "./components/FileDetailModal";
+import { SettingsModal } from "./components/SettingsModal";
 import "./App.css";
 
 export const App: React.FC = () => {
@@ -97,6 +99,9 @@ export const App: React.FC = () => {
   // ── Watcher state ─────────────────────────────────────────────────────────
   const [watcherStatus, setWatcherStatus] = useState<WatcherOverallStatus | null>(null);
   const [showWatcherPopover, setShowWatcherPopover] = useState(false);
+
+  // ── Settings modal ────────────────────────────────────────────────────────
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ── Export modal ──────────────────────────────────────────────────────────
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -537,6 +542,14 @@ export const App: React.FC = () => {
             title="Export library metadata to JSON"
           >
             <Download size={14} /> Export
+          </button>
+
+          <button
+            className="btn btn-secondary"
+            onClick={() => setSettingsOpen(true)}
+            title="View database location, storage, and safety guarantees"
+          >
+            <Settings size={14} /> Settings
           </button>
         </div>
       </header>
@@ -1042,6 +1055,18 @@ export const App: React.FC = () => {
                 <h3 style={{ fontSize: "1.05rem" }}>
                   Safe Library Metadata Export
                 </h3>
+                <span
+                  style={{
+                    fontSize: "0.72rem",
+                    padding: "2px 8px",
+                    borderRadius: 9999,
+                    background: "rgba(56, 189, 248, 0.15)",
+                    color: "#38bdf8",
+                    fontWeight: 600,
+                  }}
+                >
+                  v{exportData.format_version}
+                </span>
               </div>
               <button
                 className="btn btn-danger-ghost"
@@ -1146,6 +1171,14 @@ export const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* ── Settings / Library Storage modal ───────────────────────────────── */}
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        appInfo={appInfo}
+        onOpenExport={handleOpenExportModal}
+      />
     </div>
   );
 };

@@ -157,6 +157,7 @@ pub struct ExportSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryExport {
+    pub format_version: String,
     pub app: String,
     pub version: String,
     pub exported_at: String,

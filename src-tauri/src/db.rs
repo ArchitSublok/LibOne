@@ -353,11 +353,12 @@ impl Database {
 
     pub fn export_library(&self) -> Result<LibraryExport> {
         let roots = self.list_scan_roots()?;
-        let files = self.list_files(None, None, None, Some(50000), Some(0))?;
+        let files = self.list_files(None, None, None, None, Some(0))?;
         let exported_at = now();
         Ok(LibraryExport {
+            format_version: "1.0.0".into(),
             app: "LibOne".into(),
-            version: "0.1.0".into(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             exported_at: exported_at.clone(),
             summary: ExportSummary {
                 total_roots: roots.len(),
