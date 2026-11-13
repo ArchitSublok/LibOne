@@ -136,7 +136,10 @@ impl Database {
         Ok(files_with(&conn, "WHERE id=?1", params![id])?.pop())
     }
 
-    pub fn get_file_by_normalized_path(&self, normalized_path: &str) -> Result<Option<IndexedFile>> {
+    pub fn get_file_by_normalized_path(
+        &self,
+        normalized_path: &str,
+    ) -> Result<Option<IndexedFile>> {
         let conn = self.open()?;
         Ok(files_with(&conn, "WHERE normalized_path=?1", params![normalized_path])?.pop())
     }
@@ -186,18 +189,27 @@ impl Database {
             values.push(Box::new(root));
         }
 
-        if let Some(ref ext) = params.extension.as_ref().filter(|e| !e.trim().is_empty() && *e != "all") {
+        if let Some(ref ext) = params
+            .extension
+            .as_ref()
+            .filter(|e| !e.trim().is_empty() && *e != "all")
+        {
             where_clauses.push("extension=?".into());
             values.push(Box::new(ext.trim().to_lowercase()));
         }
 
-        if let Some(ref st) = params.status.as_ref().filter(|s| !s.trim().is_empty() && *s != "all") {
+        if let Some(ref st) = params
+            .status
+            .as_ref()
+            .filter(|s| !s.trim().is_empty() && *s != "all")
+        {
             where_clauses.push("status=?".into());
             values.push(Box::new(st.trim().to_lowercase()));
         }
 
         if let Some(ref q) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
-            where_clauses.push("(file_name LIKE ? OR absolute_path LIKE ? OR extension LIKE ?)".into());
+            where_clauses
+                .push("(file_name LIKE ? OR absolute_path LIKE ? OR extension LIKE ?)".into());
             let pattern = format!("%{}%", q.trim());
             values.push(Box::new(pattern.clone()));
             values.push(Box::new(pattern.clone()));
@@ -222,7 +234,13 @@ impl Database {
             _ => "file_name",
         };
 
-        let order_dir = match params.sort_order.as_deref().unwrap_or("asc").to_lowercase().as_str() {
+        let order_dir = match params
+            .sort_order
+            .as_deref()
+            .unwrap_or("asc")
+            .to_lowercase()
+            .as_str()
+        {
             "desc" => "DESC",
             _ => "ASC",
         };
@@ -230,11 +248,14 @@ impl Database {
         let page = params.page.unwrap_or(1).max(1);
         let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
         let offset = (page - 1) * page_size;
-        let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+        let total_pages = if total == 0 {
+            1
+        } else {
+            (total + page_size - 1) / page_size
+        };
 
-        let query_sql = format!(
-            "WHERE {where_sql} ORDER BY {order_col} {order_dir}, id ASC LIMIT ? OFFSET ?"
-        );
+        let query_sql =
+            format!("WHERE {where_sql} ORDER BY {order_col} {order_dir}, id ASC LIMIT ? OFFSET ?");
         values.push(Box::new(page_size as i64));
         values.push(Box::new(offset as i64));
 
@@ -347,7 +368,10 @@ impl Database {
     }
 
     pub fn record_scan_error(&self, root_id: i64, _err: &str) -> Result<()> {
-        self.open()?.execute("UPDATE scan_roots SET last_scan_completed_at=?1,last_scan_status='error' WHERE id=?2", params![now(), root_id])?;
+        self.open()?.execute(
+            "UPDATE scan_roots SET last_scan_completed_at=?1,last_scan_status='error' WHERE id=?2",
+            params![now(), root_id],
+        )?;
         Ok(())
     }
 

@@ -952,11 +952,35 @@ export const App: React.FC = () => {
                     {searchQuery ||
                     statusFilter !== "all" ||
                     extensionFilter !== "all"
-                      ? "Try adjusting your search query, status filter, or format filter."
+                      ? "No indexed files match your active filters or search terms."
                       : roots.length === 0
                       ? "Add a folder to begin indexing your documents."
                       : "This folder has not been scanned yet, or contains no files."}
                   </p>
+                  <div style={{ marginTop: 12, display: "flex", gap: 8, justifyContent: "center" }}>
+                    {(searchQuery || statusFilter !== "all" || extensionFilter !== "all") && (
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          setSearchQuery("");
+                          setStatusFilter("all");
+                          setExtensionFilter("all");
+                        }}
+                      >
+                        Clear Filters & Search
+                      </button>
+                    )}
+                    {roots.length > 0 && !searchQuery && statusFilter === "all" && extensionFilter === "all" && (
+                      <button
+                        className="btn btn-primary"
+                        onClick={handleScanAll}
+                        disabled={isScanning}
+                      >
+                        <RefreshCw size={14} className={isScanning ? "spin" : ""} />
+                        {isScanning ? "Scanning…" : "Scan Folders Now"}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

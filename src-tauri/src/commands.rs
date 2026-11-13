@@ -173,9 +173,7 @@ pub fn list_scan_roots(state: State<'_, AppState>) -> Result<Vec<ScanRoot>, Stri
 }
 
 #[tauri::command]
-pub fn get_watcher_status(
-    state: State<'_, AppState>,
-) -> Result<WatcherOverallStatus, String> {
+pub fn get_watcher_status(state: State<'_, AppState>) -> Result<WatcherOverallStatus, String> {
     let wm = state.watcher_manager.lock().map_err(|e| e.to_string())?;
     Ok(wm.get_overall_status())
 }
@@ -417,9 +415,7 @@ pub fn get_indexed_file_detail(
 }
 
 #[tauri::command]
-pub fn get_library_extensions(
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+pub fn get_library_extensions(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_distinct_extensions().map_err(db_err)
 }
@@ -433,14 +429,13 @@ pub fn get_library_extensions(
 /// - Target path must be strictly inside the authorized scan root boundary.
 /// - Target must still exist on disk (if not, marks record as missing in SQLite).
 /// - Target must be a regular file (not directory or special device).
-pub fn validate_file_for_access(
-    db: &Database,
-    file_id: i64,
-) -> Result<IndexedFile, String> {
+pub fn validate_file_for_access(db: &Database, file_id: i64) -> Result<IndexedFile, String> {
     let file = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
-        .ok_or_else(|| format!("Authorization denied: File #{file_id} is not indexed in the library."))?;
+        .ok_or_else(|| {
+            format!("Authorization denied: File #{file_id} is not indexed in the library.")
+        })?;
 
     let root = db
         .get_scan_root(file.scan_root_id)
@@ -460,7 +455,10 @@ pub fn validate_file_for_access(
     let norm_root_trimmed = norm_root.trim_end_matches('\\');
 
     if !norm_file.starts_with(norm_root_trimmed) {
-        return Err("Security violation: Target file path is outside authorized scan root boundaries.".to_string());
+        return Err(
+            "Security violation: Target file path is outside authorized scan root boundaries."
+                .to_string(),
+        );
     }
 
     let p = Path::new(&file.absolute_path);
@@ -535,7 +533,11 @@ fn launch_file_safely(path_str: &str, ext: &str) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let prog = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let prog = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
         std::process::Command::new(prog)
             .arg(path_str)
             .spawn()
@@ -547,10 +549,7 @@ fn launch_file_safely(path_str: &str, ext: &str) -> Result<(), String> {
 /// Open original file using the operating system's default application.
 /// Validates path against indexed records and enabled scan root before launching.
 #[tauri::command]
-pub fn open_original_file(
-    file_id: i64,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn open_original_file(file_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let file = validate_file_for_access(&db, file_id)?;
     launch_file_safely(&file.absolute_path, &file.extension)
@@ -559,10 +558,7 @@ pub fn open_original_file(
 /// Show original file in Windows File Explorer (or reveal containing folder).
 /// Uses native process argument passing (`explorer.exe /select,"<path>"`), never a shell.
 #[tauri::command]
-pub fn show_in_file_explorer(
-    file_id: i64,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn show_in_file_explorer(file_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let file = db
         .get_indexed_file(file_id)
@@ -615,7 +611,11 @@ pub fn show_in_file_explorer(
 
     #[cfg(not(target_os = "windows"))]
     {
-        let prog = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let prog = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
         let reveal_target = if target_exists {
             if cfg!(target_os = "macos") {
                 return std::process::Command::new("open")
@@ -649,7 +649,10 @@ pub fn open_file_in_default_app(
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Try finding by path in indexed records
-    let norm = file_path.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let norm = file_path
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase();
     let file = db
         .get_file_by_normalized_path(&norm)
         .map_err(db_err)?
@@ -763,10 +766,7 @@ pub fn export_library_metadata(
 
 /// Compute SHA-256 hash on demand for a single file using streaming I/O and persist it.
 #[tauri::command]
-pub fn compute_file_hash(
-    file_id: i64,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
+pub fn compute_file_hash(file_id: i64, state: State<'_, AppState>) -> Result<String, String> {
     let path_str = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let file = db
@@ -832,11 +832,17 @@ mod tests {
         let file_path = dir.join("valid_doc.pdf");
         fs::write(&file_path, b"%PDF-1.4 sample content").unwrap();
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Test Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Test Root")
+            .unwrap();
         let new_file = crate::models::NewIndexedFile {
             scan_root_id: root.id,
             absolute_path: file_path.to_str().unwrap().to_string(),
-            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            normalized_path: file_path
+                .to_str()
+                .unwrap()
+                .replace('/', "\\")
+                .to_lowercase(),
             file_name: "valid_doc.pdf".into(),
             extension: "pdf".into(),
             size_bytes: 23,
@@ -849,7 +855,10 @@ mod tests {
         let indexed = db.insert_indexed_file(&new_file).unwrap();
 
         let res = validate_file_for_access(&db, indexed.id);
-        assert!(res.is_ok(), "Validation should succeed for a valid indexed file");
+        assert!(
+            res.is_ok(),
+            "Validation should succeed for a valid indexed file"
+        );
         let validated = res.unwrap();
         assert_eq!(validated.file_name, "valid_doc.pdf");
 
@@ -873,11 +882,17 @@ mod tests {
         let file_path = dir.join("secret.docx");
         fs::write(&file_path, b"content").unwrap();
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Disabled Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Disabled Root")
+            .unwrap();
         let new_file = crate::models::NewIndexedFile {
             scan_root_id: root.id,
             absolute_path: file_path.to_str().unwrap().to_string(),
-            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            normalized_path: file_path
+                .to_str()
+                .unwrap()
+                .replace('/', "\\")
+                .to_lowercase(),
             file_name: "secret.docx".into(),
             extension: "docx".into(),
             size_bytes: 7,
@@ -907,11 +922,17 @@ mod tests {
         let file_path = dir.join("deleted_doc.txt");
         fs::write(&file_path, b"soon deleted").unwrap();
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Missing Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Missing Root")
+            .unwrap();
         let new_file = crate::models::NewIndexedFile {
             scan_root_id: root.id,
             absolute_path: file_path.to_str().unwrap().to_string(),
-            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            normalized_path: file_path
+                .to_str()
+                .unwrap()
+                .replace('/', "\\")
+                .to_lowercase(),
             file_name: "deleted_doc.txt".into(),
             extension: "txt".into(),
             size_bytes: 12,
@@ -977,11 +998,17 @@ mod tests {
         let file_path = other_dir.join("outside.pdf");
         fs::write(&file_path, b"outside content").unwrap();
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Inside Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Inside Root")
+            .unwrap();
         let new_file = crate::models::NewIndexedFile {
             scan_root_id: root.id,
             absolute_path: file_path.to_str().unwrap().to_string(),
-            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            normalized_path: file_path
+                .to_str()
+                .unwrap()
+                .replace('/', "\\")
+                .to_lowercase(),
             file_name: "outside.pdf".into(),
             extension: "pdf".into(),
             size_bytes: 15,
@@ -1072,7 +1099,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Verify top-level fields
-        assert!(parsed.get("format_version").is_some(), "missing format_version");
+        assert!(
+            parsed.get("format_version").is_some(),
+            "missing format_version"
+        );
         assert!(parsed.get("app").is_some(), "missing app");
         assert!(parsed.get("version").is_some(), "missing version");
         assert!(parsed.get("exported_at").is_some(), "missing exported_at");
@@ -1106,10 +1136,7 @@ mod tests {
         assert_eq!(contents, json);
 
         // Ensure no temp files remain
-        let remaining: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
+        let remaining: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
         assert_eq!(remaining.len(), 1, "Only the target file should remain");
 
         let _ = fs::remove_dir_all(&dir);
@@ -1134,7 +1161,11 @@ mod tests {
         let new_file = crate::models::NewIndexedFile {
             scan_root_id: root.id,
             absolute_path: file_path.to_str().unwrap().to_string(),
-            normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+            normalized_path: file_path
+                .to_str()
+                .unwrap()
+                .replace('/', "\\")
+                .to_lowercase(),
             file_name: "sample.pdf".into(),
             extension: "pdf".into(),
             size_bytes: 11,

@@ -13,7 +13,9 @@
 //! - Safe cancellation preserving partial progress consistently without marking unscanned files missing.
 
 use crate::db::Database;
-use crate::models::{IndexedFile, NewIndexedFile, ScanOptions, ScanProgress, ScanStats, ScanWarning};
+use crate::models::{
+    IndexedFile, NewIndexedFile, ScanOptions, ScanProgress, ScanStats, ScanWarning,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -167,8 +169,8 @@ where
     let default_options = ScanOptions::default();
     let opts = options.unwrap_or(&default_options);
 
-    let canonical_app_data: Option<PathBuf> = app_data_dir
-        .and_then(|p| p.canonicalize().ok().or_else(|| Some(p.to_path_buf())));
+    let canonical_app_data: Option<PathBuf> =
+        app_data_dir.and_then(|p| p.canonicalize().ok().or_else(|| Some(p.to_path_buf())));
 
     db.start_scan(root_id).map_err(|e| e.to_string())?;
     let started = Instant::now();
@@ -301,8 +303,14 @@ where
         let metadata = match entry.metadata() {
             Ok(m) => m,
             Err(e) => {
-                let is_permission = e.io_error().map(|io| io.kind() == std::io::ErrorKind::PermissionDenied).unwrap_or(false);
-                let is_not_found = e.io_error().map(|io| io.kind() == std::io::ErrorKind::NotFound).unwrap_or(false);
+                let is_permission = e
+                    .io_error()
+                    .map(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+                    .unwrap_or(false);
+                let is_not_found = e
+                    .io_error()
+                    .map(|io| io.kind() == std::io::ErrorKind::NotFound)
+                    .unwrap_or(false);
 
                 let code = if is_permission {
                     "inaccessible"
@@ -338,7 +346,9 @@ where
         if path.file_name().and_then(|x| x.to_str()).is_none() {
             progress.warnings.push(ScanWarning {
                 path: path.to_string_lossy().to_string(),
-                message: "Filename contains non-UTF-8 characters, indexed using lossy representation".into(),
+                message:
+                    "Filename contains non-UTF-8 characters, indexed using lossy representation"
+                        .into(),
                 code: "invalid_filename".into(),
             });
         }
@@ -381,7 +391,8 @@ where
         if let Some(old) = by_path.get(&normalized) {
             matched_existing_ids.insert(old.id);
 
-            let changed = old.size_bytes != input.size_bytes || old.modified_at != input.modified_at;
+            let changed =
+                old.size_bytes != input.size_bytes || old.modified_at != input.modified_at;
             if changed {
                 input.status = "changed".into();
                 // If not recalculating hash now, preserve old hash only if content was not changed
@@ -416,7 +427,9 @@ where
 
         // ── Case 2: Match by stable Windows file identity (Rename / Move) ────
         let matched_by_id = if let Some(ref fid) = file_id {
-            by_file_id.get(fid).filter(|old| !matched_existing_ids.contains(&old.id))
+            by_file_id
+                .get(fid)
+                .filter(|old| !matched_existing_ids.contains(&old.id))
         } else {
             None
         };
@@ -424,7 +437,11 @@ where
         if let Some(old) = matched_by_id {
             matched_existing_ids.insert(old.id);
             let is_mod = old.size_bytes != input.size_bytes || old.modified_at != input.modified_at;
-            input.status = if is_mod { "changed".into() } else { "indexed".into() };
+            input.status = if is_mod {
+                "changed".into()
+            } else {
+                "indexed".into()
+            };
 
             if let Err(e) = db.move_indexed_file(old.id, &input) {
                 progress.warnings.push(ScanWarning {
@@ -547,7 +564,15 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     fn temp_test_dir(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("libone_scan_test_{}_{}_{}", name, std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let p = std::env::temp_dir().join(format!(
+            "libone_scan_test_{}_{}_{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
@@ -599,7 +624,9 @@ mod tests {
         fs::create_dir_all(&node_modules).unwrap();
         fs::write(node_modules.join("package.json"), b"{}").unwrap();
 
-        let root = db.add_scan_root(test_dir.to_str().unwrap(), "Test Root").unwrap();
+        let root = db
+            .add_scan_root(test_dir.to_str().unwrap(), "Test Root")
+            .unwrap();
 
         let progress = scan_folder_with_progress(
             &db,
@@ -633,10 +660,21 @@ mod tests {
         let f1 = test_dir.join("report.txt");
         fs::write(&f1, b"Initial version of document").unwrap();
 
-        let root = db.add_scan_root(test_dir.to_str().unwrap(), "Mod Root").unwrap();
+        let root = db
+            .add_scan_root(test_dir.to_str().unwrap(), "Mod Root")
+            .unwrap();
 
         // 1. Initial scan: indexed
-        let p1 = scan_folder_with_progress(&db, root.id, test_dir.to_str().unwrap(), None, None, None, |_| {}).unwrap();
+        let p1 = scan_folder_with_progress(
+            &db,
+            root.id,
+            test_dir.to_str().unwrap(),
+            None,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(p1.stats.unwrap().added, 1);
 
         let files_before = db.get_files_for_root(root.id).unwrap();
@@ -647,7 +685,16 @@ mod tests {
         fs::write(&f1, b"Updated version with much more content added here").unwrap();
 
         // 3. Second scan: detects change
-        let p2 = scan_folder_with_progress(&db, root.id, test_dir.to_str().unwrap(), None, None, None, |_| {}).unwrap();
+        let p2 = scan_folder_with_progress(
+            &db,
+            root.id,
+            test_dir.to_str().unwrap(),
+            None,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
         let s2 = p2.stats.unwrap();
         assert_eq!(s2.modified, 1);
         assert_eq!(s2.unchanged, 0);
@@ -669,16 +716,36 @@ mod tests {
         fs::write(&f1, b"Keep this").unwrap();
         fs::write(&f2, b"Delete this").unwrap();
 
-        let root = db.add_scan_root(test_dir.to_str().unwrap(), "Del Root").unwrap();
+        let root = db
+            .add_scan_root(test_dir.to_str().unwrap(), "Del Root")
+            .unwrap();
 
         // Initial scan
-        let _ = scan_folder_with_progress(&db, root.id, test_dir.to_str().unwrap(), None, None, None, |_| {}).unwrap();
+        let _ = scan_folder_with_progress(
+            &db,
+            root.id,
+            test_dir.to_str().unwrap(),
+            None,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
 
         // Delete f2
         fs::remove_file(&f2).unwrap();
 
         // Second scan: detects missing file
-        let p2 = scan_folder_with_progress(&db, root.id, test_dir.to_str().unwrap(), None, None, None, |_| {}).unwrap();
+        let p2 = scan_folder_with_progress(
+            &db,
+            root.id,
+            test_dir.to_str().unwrap(),
+            None,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
         let s2 = p2.stats.unwrap();
         assert_eq!(s2.missing, 1);
         assert_eq!(s2.unchanged, 1);
@@ -686,7 +753,10 @@ mod tests {
         // Verification: records are NOT deleted from SQLite
         let files = db.get_files_for_root(root.id).unwrap();
         assert_eq!(files.len(), 2);
-        let deleted_record = files.iter().find(|f| f.file_name == "to_delete.txt").unwrap();
+        let deleted_record = files
+            .iter()
+            .find(|f| f.file_name == "to_delete.txt")
+            .unwrap();
         assert_eq!(deleted_record.status, "missing");
 
         let _ = fs::remove_dir_all(&test_dir);
@@ -701,10 +771,21 @@ mod tests {
         let orig_path = test_dir.join("draft_v1.txt");
         fs::write(&orig_path, b"Project Draft Content").unwrap();
 
-        let root = db.add_scan_root(test_dir.to_str().unwrap(), "Rename Root").unwrap();
+        let root = db
+            .add_scan_root(test_dir.to_str().unwrap(), "Rename Root")
+            .unwrap();
 
         // First scan
-        let p1 = scan_folder_with_progress(&db, root.id, test_dir.to_str().unwrap(), None, None, None, |_| {}).unwrap();
+        let p1 = scan_folder_with_progress(
+            &db,
+            root.id,
+            test_dir.to_str().unwrap(),
+            None,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(p1.stats.unwrap().added, 1);
 
         let files_initial = db.get_files_for_root(root.id).unwrap();
@@ -715,7 +796,16 @@ mod tests {
         fs::rename(&orig_path, &new_path).unwrap();
 
         // Second scan: recognizes rename
-        let p2 = scan_folder_with_progress(&db, root.id, test_dir.to_str().unwrap(), None, None, None, |_| {}).unwrap();
+        let p2 = scan_folder_with_progress(
+            &db,
+            root.id,
+            test_dir.to_str().unwrap(),
+            None,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
         let s2 = p2.stats.unwrap();
 
         // Exactly one file moved, zero missing
@@ -724,7 +814,10 @@ mod tests {
 
         let files_after = db.get_files_for_root(root.id).unwrap();
         assert_eq!(files_after.len(), 1);
-        assert_eq!(files_after[0].id, initial_id, "Must preserve existing database record ID");
+        assert_eq!(
+            files_after[0].id, initial_id,
+            "Must preserve existing database record ID"
+        );
         assert_eq!(files_after[0].file_name, "final_v2.txt");
 
         let _ = fs::remove_dir_all(&test_dir);
@@ -740,7 +833,9 @@ mod tests {
             fs::write(test_dir.join(format!("doc_{i}.txt")), b"some data").unwrap();
         }
 
-        let root = db.add_scan_root(test_dir.to_str().unwrap(), "Cancel Root").unwrap();
+        let root = db
+            .add_scan_root(test_dir.to_str().unwrap(), "Cancel Root")
+            .unwrap();
 
         let cancel_token = AtomicBool::new(true);
 

@@ -20,17 +20,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db::Database;
-use crate::models::{
-    NewIndexedFile, ScanRoot, WatcherOverallStatus, WatcherRootStatus,
-};
+use crate::models::{NewIndexedFile, ScanRoot, WatcherOverallStatus, WatcherRootStatus};
 use crate::scanner::{self, get_file_identity, is_excluded_dir_name, normalized_path};
 
 /// Check if a path should be ignored by the file watcher.
-pub fn should_ignore_path(
-    path: &Path,
-    root_path: &Path,
-    app_data_dir: Option<&Path>,
-) -> bool {
+pub fn should_ignore_path(path: &Path, root_path: &Path, app_data_dir: Option<&Path>) -> bool {
     // 1. Must be inside root
     if !path.starts_with(root_path) {
         return true;
@@ -125,12 +119,7 @@ impl WatcherManager {
     }
 
     /// Start watching a single scan root if enabled.
-    pub fn start_watching_root(
-        &mut self,
-        root: &ScanRoot,
-        db: Database,
-        app_handle: AppHandle,
-    ) {
+    pub fn start_watching_root(&mut self, root: &ScanRoot, db: Database, app_handle: AppHandle) {
         let root_id = root.id;
         let root_path_str = root.absolute_path.clone();
         let root_path = PathBuf::from(&root_path_str);
@@ -567,7 +556,9 @@ mod tests {
         let db_dir = temp_watch_dir("db_refresh_test");
         let db = Database::new(&db_dir).unwrap();
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Watch Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Watch Root")
+            .unwrap();
         let file_path = dir.join("article.txt");
 
         // 1. Create file

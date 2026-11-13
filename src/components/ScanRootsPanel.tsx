@@ -336,8 +336,8 @@ export function ScanRootsPanel({
                     className="root-action-btn"
                     onClick={(e) => handleToggleEnabled(e, root)}
                     disabled={thisScanning || isScanning}
-                    title={root.enabled ? "Disable this folder" : "Re-enable this folder"}
-                    aria-label={root.enabled ? `Disable ${root.display_name}` : `Enable ${root.display_name}`}
+                    title={root.enabled ? "Disable this folder (stops indexing; your original files remain untouched)" : "Re-enable indexing for this folder"}
+                    aria-label={root.enabled ? `Disable ${root.display_name} in index` : `Enable ${root.display_name} in index`}
                   >
                     {root.enabled ? <PowerOff size={12} /> : <Power size={12} />}
                   </button>
