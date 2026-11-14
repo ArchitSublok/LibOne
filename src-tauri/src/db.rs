@@ -8,7 +8,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone)]
 pub struct Database {
@@ -79,6 +79,61 @@ impl Database {
             tx.execute(
                 "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
                 params![2, now()],
+            )?;
+        }
+
+        if current < 3 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS collections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    description_nullable TEXT,
+                    color_nullable TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS tags (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    color_nullable TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS file_collections (
+                    file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (file_id, collection_id)
+                );
+                CREATE TABLE IF NOT EXISTS file_tags (
+                    file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (file_id, tag_id)
+                );
+                CREATE TABLE IF NOT EXISTS file_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                    note_text TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(name);
+                CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+                CREATE INDEX IF NOT EXISTS idx_file_collections_file_id ON file_collections(file_id);
+                CREATE INDEX IF NOT EXISTS idx_file_collections_collection_id ON file_collections(collection_id);
+                CREATE INDEX IF NOT EXISTS idx_file_tags_file_id ON file_tags(file_id);
+                CREATE INDEX IF NOT EXISTS idx_file_tags_tag_id ON file_tags(tag_id);
+                CREATE INDEX IF NOT EXISTS idx_file_notes_file_id ON file_notes(file_id);",
+            )?;
+            tx.execute(
+                "INSERT INTO library_metadata(id,schema_version,library_created_at,updated_at)
+                 VALUES(1, 3, ?1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET schema_version=3, updated_at=?1;",
+                params![now()],
+            )?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+                params![3, now()],
             )?;
         }
 
@@ -531,10 +586,356 @@ mod tests {
             c.query_row("SELECT schema_version FROM library_metadata", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         drop(c);
         std::fs::remove_dir_all(p).unwrap()
+    }
+
+    #[test]
+    fn migration_v3_fresh_database_structure_and_constraints() {
+        let (d, p) = db();
+        let conn = d.open().unwrap();
+
+        // 1. Verify schema version and migrations applied
+        let schema_ver: i64 = conn
+            .query_row(
+                "SELECT schema_version FROM library_metadata WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_ver, 3);
+
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(versions, vec![1, 2, 3]);
+
+        // 2. Verify all new Phase 2 tables exist
+        for table in &[
+            "collections",
+            "tags",
+            "file_collections",
+            "file_tags",
+            "file_notes",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    params![table],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                > 0;
+            assert!(exists, "Expected table '{table}' to exist");
+        }
+
+        // 3. Verify case-insensitive unique collection name
+        conn.execute(
+            "INSERT INTO collections (name, description_nullable, color_nullable, created_at, updated_at)
+             VALUES ('Taxes', 'Tax docs', '#3b82f6', datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let dup_col = conn.execute(
+            "INSERT INTO collections (name, description_nullable, color_nullable, created_at, updated_at)
+             VALUES ('taxes', 'duplicate', '#ff0000', datetime('now'), datetime('now'))",
+            [],
+        );
+        assert!(
+            dup_col.is_err(),
+            "Expected duplicate case-insensitive collection name to fail"
+        );
+
+        // 4. Verify case-insensitive unique tag name
+        conn.execute(
+            "INSERT INTO tags (name, color_nullable, created_at) VALUES ('Invoice', '#10b981', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let dup_tag = conn.execute(
+            "INSERT INTO tags (name, color_nullable, created_at) VALUES ('invoice', '#ff0000', datetime('now'))",
+            [],
+        );
+        assert!(
+            dup_tag.is_err(),
+            "Expected duplicate case-insensitive tag name to fail"
+        );
+
+        // 5. Seed scan root and file
+        let root = d.add_scan_root(r"C:\Docs", "Docs").unwrap();
+        let file = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: r"C:\Docs\sample.pdf".into(),
+                normalized_path: normalize(r"C:\Docs\sample.pdf"),
+                file_name: "sample.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 1024,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: Some("0001:0002".into()),
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let col_id: i64 = conn
+            .query_row("SELECT id FROM collections WHERE name='Taxes'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let tag_id: i64 = conn
+            .query_row("SELECT id FROM tags WHERE name='Invoice'", [], |r| r.get(0))
+            .unwrap();
+
+        // 6. Link file to collection & tag, and add note
+        conn.execute(
+            "INSERT INTO file_collections (file_id, collection_id, created_at) VALUES (?1, ?2, datetime('now'))",
+            params![file.id, col_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_tags (file_id, tag_id, created_at) VALUES (?1, ?2, datetime('now'))",
+            params![file.id, tag_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_notes (file_id, note_text, created_at, updated_at) VALUES (?1, 'Important receipt', datetime('now'), datetime('now'))",
+            params![file.id],
+        )
+        .unwrap();
+
+        // 7. Verify unique pair constraints
+        let dup_fc = conn.execute(
+            "INSERT INTO file_collections (file_id, collection_id, created_at) VALUES (?1, ?2, datetime('now'))",
+            params![file.id, col_id],
+        );
+        assert!(
+            dup_fc.is_err(),
+            "Expected duplicate file_collection to fail"
+        );
+
+        let dup_ft = conn.execute(
+            "INSERT INTO file_tags (file_id, tag_id, created_at) VALUES (?1, ?2, datetime('now'))",
+            params![file.id, tag_id],
+        );
+        assert!(dup_ft.is_err(), "Expected duplicate file_tag to fail");
+
+        // 8. Verify cascade: deleting a collection removes only its links, never the file
+        conn.execute("DELETE FROM collections WHERE id=?1", params![col_id])
+            .unwrap();
+        let fc_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_collections WHERE collection_id=?1",
+                params![col_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fc_count, 0, "file_collections links should be removed");
+        let file_still_exists = d.get_indexed_file(file.id).unwrap();
+        assert!(
+            file_still_exists.is_some(),
+            "Indexed file must remain after collection deletion"
+        );
+
+        // 9. Verify cascade: deleting a tag removes only its links, never the file
+        conn.execute("DELETE FROM tags WHERE id=?1", params![tag_id])
+            .unwrap();
+        let ft_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_tags WHERE tag_id=?1",
+                params![tag_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ft_count, 0, "file_tags links should be removed");
+        let file_still_exists2 = d.get_indexed_file(file.id).unwrap();
+        assert!(
+            file_still_exists2.is_some(),
+            "Indexed file must remain after tag deletion"
+        );
+
+        // 10. Verify cascade: deleting file removes its notes
+        conn.execute("DELETE FROM indexed_files WHERE id=?1", params![file.id])
+            .unwrap();
+        let note_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_notes WHERE file_id=?1",
+                params![file.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            note_count, 0,
+            "file_notes should be cascade removed when file is deleted"
+        );
+
+        drop(conn);
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn migration_from_phase1_database_preserves_all_data() {
+        let p = std::env::temp_dir().join(format!(
+            "libone-p1-migration-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        let db_file = p.join("libone.db");
+
+        // Manually build an exact Phase 1 (schema version 2) database with records
+        {
+            let conn = Connection::open(&db_file).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+                 INSERT INTO schema_migrations VALUES (1, '2026-11-13T00:00:00Z');
+                 INSERT INTO schema_migrations VALUES (2, '2026-11-13T00:01:00Z');
+
+                 CREATE TABLE scan_roots (
+                     id INTEGER PRIMARY KEY,
+                     absolute_path TEXT NOT NULL,
+                     normalized_path TEXT NOT NULL UNIQUE,
+                     display_name TEXT NOT NULL,
+                     enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),
+                     created_at TEXT NOT NULL,
+                     last_scan_started_at TEXT,
+                     last_scan_completed_at TEXT,
+                     last_scan_status TEXT NOT NULL DEFAULT 'never_scanned'
+                 );
+
+                 CREATE TABLE indexed_files (
+                     id INTEGER PRIMARY KEY,
+                     scan_root_id INTEGER NOT NULL REFERENCES scan_roots(id) ON DELETE RESTRICT,
+                     absolute_path TEXT NOT NULL,
+                     normalized_path TEXT NOT NULL UNIQUE,
+                     file_name TEXT NOT NULL,
+                     extension TEXT NOT NULL,
+                     size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),
+                     modified_at TEXT,
+                     created_at_if_available TEXT,
+                     discovered_at TEXT NOT NULL,
+                     last_seen_at TEXT NOT NULL,
+                     content_hash_nullable TEXT,
+                     file_id_nullable TEXT,
+                     status TEXT NOT NULL
+                 );
+
+                 CREATE TABLE library_metadata (
+                     id INTEGER PRIMARY KEY CHECK(id=1),
+                     schema_version INTEGER NOT NULL,
+                     library_created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+
+                 INSERT INTO library_metadata VALUES (1, 2, '2026-11-13T00:00:00Z', '2026-11-13T00:01:00Z');
+
+                 INSERT INTO scan_roots (id, absolute_path, normalized_path, display_name, enabled, created_at, last_scan_status)
+                 VALUES (10, 'D:\\Documents', 'd:\\documents', 'My Documents', 1, '2026-11-13T00:00:00Z', 'completed');
+
+                 INSERT INTO indexed_files (id, scan_root_id, absolute_path, normalized_path, file_name, extension, size_bytes, modified_at, discovered_at, last_seen_at, content_hash_nullable, file_id_nullable, status)
+                 VALUES (100, 10, 'D:\\Documents\\Contract.pdf', 'd:\\documents\\contract.pdf', 'Contract.pdf', 'pdf', 204800, '2026-11-12T10:00:00Z', '2026-11-13T00:00:00Z', '2026-11-13T00:00:00Z', 'sha256_mock_hash_val', '0028a1f4:000000000014ef02', 'indexed');
+                ",
+            )
+            .unwrap();
+        }
+
+        // Now open via LibOne Database::new, which executes migrate()
+        let database = Database::new(&p).unwrap();
+        let conn = database.open().unwrap();
+
+        // 1. Verify schema version was updated from 2 to 3
+        let schema_ver: i64 = conn
+            .query_row(
+                "SELECT schema_version FROM library_metadata WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_ver, 3);
+
+        // 2. Verify schema_migrations now includes 1, 2, and 3
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(versions, vec![1, 2, 3]);
+
+        // 3. Verify original Phase 1 scan root is completely intact
+        let root = database
+            .get_scan_root(10)
+            .unwrap()
+            .expect("Root 10 must exist");
+        assert_eq!(root.id, 10);
+        assert_eq!(root.absolute_path, "D:\\Documents");
+        assert_eq!(root.display_name, "My Documents");
+        assert!(root.enabled);
+        assert_eq!(root.last_scan_status, "completed");
+
+        // 4. Verify original Phase 1 file is completely intact
+        let file = database
+            .get_indexed_file(100)
+            .unwrap()
+            .expect("File 100 must exist");
+        assert_eq!(file.id, 100);
+        assert_eq!(file.scan_root_id, 10);
+        assert_eq!(file.file_name, "Contract.pdf");
+        assert_eq!(file.extension, "pdf");
+        assert_eq!(file.size_bytes, 204800);
+        assert_eq!(
+            file.content_hash_nullable.as_deref(),
+            Some("sha256_mock_hash_val")
+        );
+        assert_eq!(
+            file.file_id_nullable.as_deref(),
+            Some("0028a1f4:000000000014ef02")
+        );
+        assert_eq!(file.status, "indexed");
+
+        // 5. Verify new Phase 2 tables can be used with the existing Phase 1 file
+        conn.execute(
+            "INSERT INTO collections (name, description_nullable, color_nullable, created_at, updated_at)
+             VALUES ('Legal', 'Contracts and agreements', '#6366f1', datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let col_id: i64 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO file_collections (file_id, collection_id, created_at) VALUES (100, ?1, datetime('now'))",
+            params![col_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO file_notes (file_id, note_text, created_at, updated_at) VALUES (100, 'Reviewed by counsel', datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let note_text: String = conn
+            .query_row(
+                "SELECT note_text FROM file_notes WHERE file_id=100",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(note_text, "Reviewed by counsel");
+
+        drop(conn);
+        std::fs::remove_dir_all(p).unwrap();
     }
 
     #[test]
