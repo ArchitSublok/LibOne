@@ -49,6 +49,47 @@ pub struct NewIndexedFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub description_nullable: Option<String>,
+    pub color_nullable: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    pub color_nullable: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileCollectionLink {
+    pub file_id: i64,
+    pub collection_id: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTagLink {
+    pub file_id: i64,
+    pub tag_id: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileNote {
+    pub id: i64,
+    pub file_id: i64,
+    pub note_text: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedFiles {
     pub files: Vec<IndexedFile>,
     pub total: usize,
@@ -63,6 +104,9 @@ pub struct FileQueryParams {
     pub root_id: Option<i64>,
     pub extension: Option<String>,
     pub status: Option<String>,
+    pub collection_id: Option<i64>,
+    pub tag_ids: Option<Vec<i64>>,
+    pub has_notes: Option<bool>,
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
     pub page: Option<usize>,
