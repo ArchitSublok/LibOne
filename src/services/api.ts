@@ -3,8 +3,12 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AppInfo,
+  Collection,
+  FileCollectionLink,
   FileDetail,
+  FileNote,
   FileQueryParams,
+  FileTagLink,
   IndexedFile,
   LibraryExport,
   PaginatedFiles,
@@ -12,6 +16,7 @@ import {
   ScanProgress,
   ScanRoot,
   ScanStats,
+  Tag,
   WatcherOverallStatus,
 } from "../types";
 

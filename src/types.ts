@@ -35,6 +35,42 @@ export interface IndexedFile {
   status: string;
 }
 
+export interface Collection {
+  id: number;
+  name: string;
+  description_nullable: string | null;
+  color_nullable: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Tag {
+  id: number;
+  name: string;
+  color_nullable: string | null;
+  created_at: string;
+}
+
+export interface FileCollectionLink {
+  file_id: number;
+  collection_id: number;
+  created_at: string;
+}
+
+export interface FileTagLink {
+  file_id: number;
+  tag_id: number;
+  created_at: string;
+}
+
+export interface FileNote {
+  id: number;
+  file_id: number;
+  note_text: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PaginatedFiles {
   files: IndexedFile[];
   total: number;
@@ -48,6 +84,9 @@ export interface FileQueryParams {
   root_id?: number | null;
   extension?: string | null;
   status?: string | null;
+  collection_id?: number | null;
+  tag_ids?: number[] | null;
+  has_notes?: boolean | null;
   sort_by?: "name" | "path" | "extension" | "size" | "modified" | "status" | null;
   sort_order?: "asc" | "desc" | null;
   page?: number | null;

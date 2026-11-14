@@ -60,6 +60,38 @@ pub fn run() {
             commands::export_library_metadata,
             commands::compute_file_hash,
             commands::get_watcher_status,
+            // Phase 2: Collections
+            commands::create_collection,
+            commands::get_collection,
+            commands::list_collections,
+            commands::update_collection,
+            commands::delete_collection,
+            // Phase 2: Tags
+            commands::create_tag,
+            commands::get_tag,
+            commands::list_tags,
+            commands::update_tag,
+            commands::delete_tag,
+            // Phase 2: File-Collection Links
+            commands::add_file_to_collection,
+            commands::remove_file_from_collection,
+            commands::list_file_collections,
+            commands::bulk_add_file_collections,
+            commands::bulk_remove_file_collections,
+            commands::set_file_collections,
+            // Phase 2: File-Tag Links
+            commands::add_file_to_tag,
+            commands::remove_file_from_tag,
+            commands::list_file_tags,
+            commands::bulk_add_file_tags,
+            commands::bulk_remove_file_tags,
+            commands::set_file_tags,
+            // Phase 2: File Notes
+            commands::create_file_note,
+            commands::get_file_note,
+            commands::list_file_notes,
+            commands::update_file_note,
+            commands::delete_file_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibOne application");

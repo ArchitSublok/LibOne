@@ -11,8 +11,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::Database;
 use crate::models::{
-    AppInfo, FileDetail, FileQueryParams, IndexedFile, LibraryExport, PaginatedFiles, ScanOptions,
-    ScanProgress, ScanRoot, ScanStats, WatcherOverallStatus,
+    AppInfo, Collection, FileCollectionLink, FileDetail, FileNote, FileQueryParams, FileTagLink,
+    IndexedFile, LibraryExport, PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats,
+    Tag, WatcherOverallStatus,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -790,6 +791,589 @@ pub fn compute_file_hash(file_id: i64, state: State<'_, AppState>) -> Result<Str
     Ok(hash)
 }
 
+// ── Helpers for Phase 2 ───────────────────────────────────────────────────────
+
+pub fn validate_file_for_organization(db: &Database, file_id: i64) -> Result<IndexedFile, String> {
+    let file = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+
+    let root = db
+        .get_scan_root(file.scan_root_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Scan root for file #{file_id} not found."))?;
+
+    if !root.enabled {
+        return Err(format!(
+            "Action denied: Scan root '{}' containing file #{file_id} is disabled.",
+            root.display_name
+        ));
+    }
+
+    Ok(file)
+}
+
+// ── Phase 2: Collections ──────────────────────────────────────────────────────
+
+pub fn create_collection_inner(
+    db: &Database,
+    name: &str,
+    description: Option<&str>,
+    color: Option<&str>,
+) -> Result<Collection, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Collection name cannot be empty.".to_string());
+    }
+    if db.get_collection_by_name(trimmed).map_err(db_err)?.is_some() {
+        return Err(format!("A collection with the name '{trimmed}' already exists."));
+    }
+    db.create_collection(trimmed, description, color).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn create_collection(
+    name: String,
+    description: Option<String>,
+    color: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Collection, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    create_collection_inner(&db, &name, description.as_deref(), color.as_deref())
+}
+
+pub fn get_collection_inner(db: &Database, id: i64) -> Result<Collection, String> {
+    db.get_collection(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Collection #{id} not found."))
+}
+
+#[tauri::command]
+pub fn get_collection(id: i64, state: State<'_, AppState>) -> Result<Collection, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_collection_inner(&db, id)
+}
+
+pub fn list_collections_inner(db: &Database) -> Result<Vec<Collection>, String> {
+    db.list_collections().map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_collections(state: State<'_, AppState>) -> Result<Vec<Collection>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_collections_inner(&db)
+}
+
+pub fn update_collection_inner(
+    db: &Database,
+    id: i64,
+    name: &str,
+    description: Option<&str>,
+    color: Option<&str>,
+) -> Result<Collection, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Collection name cannot be empty.".to_string());
+    }
+    let existing = db
+        .get_collection(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Collection #{id} not found."))?;
+
+    if let Some(other) = db.get_collection_by_name(trimmed).map_err(db_err)? {
+        if other.id != existing.id {
+            return Err(format!("A collection with the name '{trimmed}' already exists."));
+        }
+    }
+
+    db.update_collection(id, trimmed, description, color).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn update_collection(
+    id: i64,
+    name: String,
+    description: Option<String>,
+    color: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Collection, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    update_collection_inner(&db, id, &name, description.as_deref(), color.as_deref())
+}
+
+pub fn delete_collection_inner(db: &Database, id: i64) -> Result<(), String> {
+    let _ = db
+        .get_collection(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Collection #{id} not found."))?;
+    db.delete_collection(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn delete_collection(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    delete_collection_inner(&db, id)
+}
+
+// ── Phase 2: Tags ─────────────────────────────────────────────────────────────
+
+pub fn create_tag_inner(db: &Database, name: &str, color: Option<&str>) -> Result<Tag, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Tag name cannot be empty.".to_string());
+    }
+    if db.get_tag_by_name(trimmed).map_err(db_err)?.is_some() {
+        return Err(format!("A tag with the name '{trimmed}' already exists."));
+    }
+    db.create_tag(trimmed, color).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn create_tag(
+    name: String,
+    color: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Tag, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    create_tag_inner(&db, &name, color.as_deref())
+}
+
+pub fn get_tag_inner(db: &Database, id: i64) -> Result<Tag, String> {
+    db.get_tag(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Tag #{id} not found."))
+}
+
+#[tauri::command]
+pub fn get_tag(id: i64, state: State<'_, AppState>) -> Result<Tag, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_tag_inner(&db, id)
+}
+
+pub fn list_tags_inner(db: &Database) -> Result<Vec<Tag>, String> {
+    db.list_tags().map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_tags(state: State<'_, AppState>) -> Result<Vec<Tag>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_tags_inner(&db)
+}
+
+pub fn update_tag_inner(
+    db: &Database,
+    id: i64,
+    name: &str,
+    color: Option<&str>,
+) -> Result<Tag, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Tag name cannot be empty.".to_string());
+    }
+    let existing = db
+        .get_tag(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Tag #{id} not found."))?;
+
+    if let Some(other) = db.get_tag_by_name(trimmed).map_err(db_err)? {
+        if other.id != existing.id {
+            return Err(format!("A tag with the name '{trimmed}' already exists."));
+        }
+    }
+
+    db.update_tag(id, trimmed, color).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn update_tag(
+    id: i64,
+    name: String,
+    color: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Tag, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    update_tag_inner(&db, id, &name, color.as_deref())
+}
+
+pub fn delete_tag_inner(db: &Database, id: i64) -> Result<(), String> {
+    let _ = db
+        .get_tag(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Tag #{id} not found."))?;
+    db.delete_tag(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn delete_tag(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    delete_tag_inner(&db, id)
+}
+
+// ── Phase 2: File-Collection Links ────────────────────────────────────────────
+
+pub fn add_file_to_collection_inner(
+    db: &Database,
+    file_id: i64,
+    collection_id: i64,
+) -> Result<FileCollectionLink, String> {
+    validate_file_for_organization(db, file_id)?;
+    let _ = db
+        .get_collection(collection_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Collection #{collection_id} not found."))?;
+    db.add_file_to_collection(file_id, collection_id)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn add_file_to_collection(
+    file_id: i64,
+    collection_id: i64,
+    state: State<'_, AppState>,
+) -> Result<FileCollectionLink, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    add_file_to_collection_inner(&db, file_id, collection_id)
+}
+
+pub fn remove_file_from_collection_inner(
+    db: &Database,
+    file_id: i64,
+    collection_id: i64,
+) -> Result<(), String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.remove_file_from_collection(file_id, collection_id)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn remove_file_from_collection(
+    file_id: i64,
+    collection_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    remove_file_from_collection_inner(&db, file_id, collection_id)
+}
+
+pub fn list_file_collections_inner(
+    db: &Database,
+    file_id: i64,
+) -> Result<Vec<Collection>, String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.list_file_collections(file_id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_file_collections(
+    file_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<Collection>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_file_collections_inner(&db, file_id)
+}
+
+pub fn bulk_add_file_collections_inner(
+    db: &Database,
+    file_id: i64,
+    collection_ids: &[i64],
+) -> Result<(), String> {
+    validate_file_for_organization(db, file_id)?;
+    for &cid in collection_ids {
+        if db.get_collection(cid).map_err(db_err)?.is_none() {
+            return Err(format!("Collection #{cid} not found."));
+        }
+    }
+    db.bulk_add_file_collections(file_id, collection_ids)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn bulk_add_file_collections(
+    file_id: i64,
+    collection_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    bulk_add_file_collections_inner(&db, file_id, &collection_ids)
+}
+
+pub fn bulk_remove_file_collections_inner(
+    db: &Database,
+    file_id: i64,
+    collection_ids: &[i64],
+) -> Result<(), String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.bulk_remove_file_collections(file_id, collection_ids)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn bulk_remove_file_collections(
+    file_id: i64,
+    collection_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    bulk_remove_file_collections_inner(&db, file_id, &collection_ids)
+}
+
+pub fn set_file_collections_inner(
+    db: &Database,
+    file_id: i64,
+    collection_ids: &[i64],
+) -> Result<(), String> {
+    validate_file_for_organization(db, file_id)?;
+    for &cid in collection_ids {
+        if db.get_collection(cid).map_err(db_err)?.is_none() {
+            return Err(format!("Collection #{cid} not found."));
+        }
+    }
+    db.set_file_collections(file_id, collection_ids)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn set_file_collections(
+    file_id: i64,
+    collection_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    set_file_collections_inner(&db, file_id, &collection_ids)
+}
+
+// ── Phase 2: File-Tag Links ───────────────────────────────────────────────────
+
+pub fn add_file_to_tag_inner(
+    db: &Database,
+    file_id: i64,
+    tag_id: i64,
+) -> Result<FileTagLink, String> {
+    validate_file_for_organization(db, file_id)?;
+    let _ = db
+        .get_tag(tag_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Tag #{tag_id} not found."))?;
+    db.add_file_to_tag(file_id, tag_id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn add_file_to_tag(
+    file_id: i64,
+    tag_id: i64,
+    state: State<'_, AppState>,
+) -> Result<FileTagLink, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    add_file_to_tag_inner(&db, file_id, tag_id)
+}
+
+pub fn remove_file_from_tag_inner(
+    db: &Database,
+    file_id: i64,
+    tag_id: i64,
+) -> Result<(), String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.remove_file_from_tag(file_id, tag_id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn remove_file_from_tag(
+    file_id: i64,
+    tag_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    remove_file_from_tag_inner(&db, file_id, tag_id)
+}
+
+pub fn list_file_tags_inner(db: &Database, file_id: i64) -> Result<Vec<Tag>, String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.list_file_tags(file_id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_file_tags(file_id: i64, state: State<'_, AppState>) -> Result<Vec<Tag>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_file_tags_inner(&db, file_id)
+}
+
+pub fn bulk_add_file_tags_inner(
+    db: &Database,
+    file_id: i64,
+    tag_ids: &[i64],
+) -> Result<(), String> {
+    validate_file_for_organization(db, file_id)?;
+    for &tid in tag_ids {
+        if db.get_tag(tid).map_err(db_err)?.is_none() {
+            return Err(format!("Tag #{tid} not found."));
+        }
+    }
+    db.bulk_add_file_tags(file_id, tag_ids).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn bulk_add_file_tags(
+    file_id: i64,
+    tag_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    bulk_add_file_tags_inner(&db, file_id, &tag_ids)
+}
+
+pub fn bulk_remove_file_tags_inner(
+    db: &Database,
+    file_id: i64,
+    tag_ids: &[i64],
+) -> Result<(), String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.bulk_remove_file_tags(file_id, tag_ids).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn bulk_remove_file_tags(
+    file_id: i64,
+    tag_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    bulk_remove_file_tags_inner(&db, file_id, &tag_ids)
+}
+
+pub fn set_file_tags_inner(
+    db: &Database,
+    file_id: i64,
+    tag_ids: &[i64],
+) -> Result<(), String> {
+    validate_file_for_organization(db, file_id)?;
+    for &tid in tag_ids {
+        if db.get_tag(tid).map_err(db_err)?.is_none() {
+            return Err(format!("Tag #{tid} not found."));
+        }
+    }
+    db.set_file_tags(file_id, tag_ids).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn set_file_tags(
+    file_id: i64,
+    tag_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    set_file_tags_inner(&db, file_id, &tag_ids)
+}
+
+// ── Phase 2: File Notes ───────────────────────────────────────────────────────
+
+pub fn create_file_note_inner(
+    db: &Database,
+    file_id: i64,
+    note_text: &str,
+) -> Result<FileNote, String> {
+    let trimmed = note_text.trim();
+    if trimmed.is_empty() {
+        return Err("Note content cannot be empty.".to_string());
+    }
+    validate_file_for_organization(db, file_id)?;
+    db.create_file_note(file_id, trimmed).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn create_file_note(
+    file_id: i64,
+    note_text: String,
+    state: State<'_, AppState>,
+) -> Result<FileNote, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    create_file_note_inner(&db, file_id, &note_text)
+}
+
+pub fn get_file_note_inner(db: &Database, note_id: i64) -> Result<FileNote, String> {
+    db.get_file_note(note_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Note #{note_id} not found."))
+}
+
+#[tauri::command]
+pub fn get_file_note(note_id: i64, state: State<'_, AppState>) -> Result<FileNote, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_file_note_inner(&db, note_id)
+}
+
+pub fn list_file_notes_inner(db: &Database, file_id: i64) -> Result<Vec<FileNote>, String> {
+    let _ = db
+        .get_indexed_file(file_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    db.list_file_notes(file_id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_file_notes(file_id: i64, state: State<'_, AppState>) -> Result<Vec<FileNote>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_file_notes_inner(&db, file_id)
+}
+
+pub fn update_file_note_inner(
+    db: &Database,
+    note_id: i64,
+    note_text: &str,
+) -> Result<FileNote, String> {
+    let trimmed = note_text.trim();
+    if trimmed.is_empty() {
+        return Err("Note content cannot be empty.".to_string());
+    }
+    let _ = db
+        .get_file_note(note_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Note #{note_id} not found."))?;
+    db.update_file_note(note_id, trimmed).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn update_file_note(
+    note_id: i64,
+    note_text: String,
+    state: State<'_, AppState>,
+) -> Result<FileNote, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    update_file_note_inner(&db, note_id, &note_text)
+}
+
+pub fn delete_file_note_inner(db: &Database, note_id: i64) -> Result<(), String> {
+    let _ = db
+        .get_file_note(note_id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Note #{note_id} not found."))?;
+    db.delete_file_note(note_id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn delete_file_note(note_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    delete_file_note_inner(&db, note_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,6 +1772,214 @@ mod tests {
         assert_eq!(deserialized.summary.total_files, 1);
         assert_eq!(deserialized.files[0].file_name, "sample.pdf");
         assert_eq!(deserialized.scan_roots[0].display_name, "RT Root");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_commands_invalid_ids() {
+        let (db, db_dir) = test_auth_db("cmd_invalid_ids");
+
+        // Invalid file ID
+        let res_fc = add_file_to_collection_inner(&db, 99999, 1);
+        assert!(res_fc.is_err());
+        assert!(res_fc.unwrap_err().contains("not found in library"));
+
+        let res_ft = add_file_to_tag_inner(&db, 99999, 1);
+        assert!(res_ft.is_err());
+        assert!(res_ft.unwrap_err().contains("not found in library"));
+
+        let res_note = create_file_note_inner(&db, 99999, "Note text");
+        assert!(res_note.is_err());
+        assert!(res_note.unwrap_err().contains("not found in library"));
+
+        // Invalid collection ID
+        let res_col = get_collection_inner(&db, 99999);
+        assert!(res_col.is_err());
+        assert!(res_col.unwrap_err().contains("Collection #99999 not found"));
+
+        // Invalid tag ID
+        let res_tag = get_tag_inner(&db, 99999);
+        assert!(res_tag.is_err());
+        assert!(res_tag.unwrap_err().contains("Tag #99999 not found"));
+
+        // Invalid note ID
+        let res_n = get_file_note_inner(&db, 99999);
+        assert!(res_n.is_err());
+        assert!(res_n.unwrap_err().contains("Note #99999 not found"));
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_commands_disabled_roots() {
+        let dir = temp_auth_dir("cmd_disabled_root");
+        let (db, db_dir) = test_auth_db("cmd_disabled_root");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Test Root").unwrap();
+        let file = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("doc.pdf").to_str().unwrap().into(),
+                normalized_path: dir.join("doc.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "doc.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let col = create_collection_inner(&db, "Test Col", None, None).unwrap();
+        let tag = create_tag_inner(&db, "Test Tag", None).unwrap();
+
+        // Disable root
+        db.remove_scan_root(root.id).unwrap();
+
+        // Organization commands should reject files in disabled roots
+        let res_col = add_file_to_collection_inner(&db, file.id, col.id);
+        assert!(res_col.is_err());
+        assert!(res_col.unwrap_err().contains("is disabled"));
+
+        let res_tag = add_file_to_tag_inner(&db, file.id, tag.id);
+        assert!(res_tag.is_err());
+        assert!(res_tag.unwrap_err().contains("is disabled"));
+
+        let res_note = create_file_note_inner(&db, file.id, "Note on disabled");
+        assert!(res_note.is_err());
+        assert!(res_note.unwrap_err().contains("is disabled"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_commands_duplicate_links() {
+        let dir = temp_auth_dir("cmd_dup_links");
+        let (db, db_dir) = test_auth_db("cmd_dup_links");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Dup Root").unwrap();
+        let file = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("f.pdf").to_str().unwrap().into(),
+                normalized_path: dir.join("f.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "f.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let col = create_collection_inner(&db, "Col Dup", None, None).unwrap();
+        let tag = create_tag_inner(&db, "Tag Dup", None).unwrap();
+
+        // First link
+        let l1 = add_file_to_collection_inner(&db, file.id, col.id).unwrap();
+        assert_eq!(l1.collection_id, col.id);
+        // Duplicate link succeeds safely
+        let l1_dup = add_file_to_collection_inner(&db, file.id, col.id).unwrap();
+        assert_eq!(l1_dup.collection_id, col.id);
+
+        let t1 = add_file_to_tag_inner(&db, file.id, tag.id).unwrap();
+        assert_eq!(t1.tag_id, tag.id);
+        let t1_dup = add_file_to_tag_inner(&db, file.id, tag.id).unwrap();
+        assert_eq!(t1_dup.tag_id, tag.id);
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_commands_missing_records_and_deletion() {
+        let (db, db_dir) = test_auth_db("cmd_missing_del");
+
+        // Deleting non-existent entities
+        assert!(delete_collection_inner(&db, 99999).is_err());
+        assert!(delete_tag_inner(&db, 99999).is_err());
+        assert!(delete_file_note_inner(&db, 99999).is_err());
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_commands_valid_operations_full_flow() {
+        let dir = temp_auth_dir("cmd_full_flow");
+        let (db, db_dir) = test_auth_db("cmd_full_flow");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Full Root").unwrap();
+        let f1 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("invoice.pdf").to_str().unwrap().into(),
+                normalized_path: dir.join("invoice.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "invoice.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 256,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        // Collections CRUD
+        let c1 = create_collection_inner(&db, "Invoices", Some("Incoming invoices"), Some("#3b82f6")).unwrap();
+        assert_eq!(c1.name, "Invoices");
+        let c_list = list_collections_inner(&db).unwrap();
+        assert_eq!(c_list.len(), 1);
+
+        let c1_up = update_collection_inner(&db, c1.id, "Paid Invoices", None, Some("#10b981")).unwrap();
+        assert_eq!(c1_up.name, "Paid Invoices");
+
+        // Tags CRUD
+        let t1 = create_tag_inner(&db, "2026", Some("#f59e0b")).unwrap();
+        let t2 = create_tag_inner(&db, "Q4", None).unwrap();
+        let t_list = list_tags_inner(&db).unwrap();
+        assert_eq!(t_list.len(), 2);
+
+        // Link file to collection & tags
+        add_file_to_collection_inner(&db, f1.id, c1.id).unwrap();
+        bulk_add_file_tags_inner(&db, f1.id, &[t1.id, t2.id]).unwrap();
+
+        // Listing collections and tags for file
+        let file_cols = list_file_collections_inner(&db, f1.id).unwrap();
+        assert_eq!(file_cols.len(), 1);
+        assert_eq!(file_cols[0].id, c1.id);
+
+        let file_tags = list_file_tags_inner(&db, f1.id).unwrap();
+        assert_eq!(file_tags.len(), 2);
+
+        // Notes CRUD
+        let note = create_file_note_inner(&db, f1.id, "Paid on time").unwrap();
+        assert_eq!(note.note_text, "Paid on time");
+
+        let note_up = update_file_note_inner(&db, note.id, "Paid via ACH on Nov 14").unwrap();
+        assert_eq!(note_up.note_text, "Paid via ACH on Nov 14");
+
+        let notes_for_file = list_file_notes_inner(&db, f1.id).unwrap();
+        assert_eq!(notes_for_file.len(), 1);
+
+        // Combined file query
+        let query_res = db
+            .query_files(&FileQueryParams {
+                collection_id: Some(c1.id),
+                tag_ids: Some(vec![t1.id, t2.id]),
+                has_notes: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(query_res.total, 1);
+        assert_eq!(query_res.files[0].id, f1.id);
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
