@@ -1162,4 +1162,79 @@ export async function deleteFileNote(noteId: number): Promise<void> {
   mockNotes.splice(idx, 1);
 }
 
+// ── Multi-file Batch Organization Helpers ─────────────────────────────────────
+
+export async function addFilesToCollection(
+  fileIds: number[],
+  collectionId: number
+): Promise<void> {
+  for (const fid of fileIds) {
+    await addFileToCollection(fid, collectionId);
+  }
+}
+
+export async function removeFilesFromCollection(
+  fileIds: number[],
+  collectionId: number
+): Promise<void> {
+  for (const fid of fileIds) {
+    await removeFileFromCollection(fid, collectionId);
+  }
+}
+
+export async function addFilesToTag(
+  fileIds: number[],
+  tagId: number
+): Promise<void> {
+  for (const fid of fileIds) {
+    await addFileToTag(fid, tagId);
+  }
+}
+
+export async function removeFilesFromTag(
+  fileIds: number[],
+  tagId: number
+): Promise<void> {
+  for (const fid of fileIds) {
+    await removeFileFromTag(fid, tagId);
+  }
+}
+
+// ── Count Computation Helpers ────────────────────────────────────────────────
+
+export async function getCollectionCounts(
+  collections: Collection[]
+): Promise<Record<number, number>> {
+  const counts: Record<number, number> = {};
+  await Promise.all(
+    collections.map(async (c) => {
+      try {
+        const res = await queryIndexedFiles({ collection_id: c.id, page_size: 1 });
+        counts[c.id] = res.total;
+      } catch {
+        counts[c.id] = 0;
+      }
+    })
+  );
+  return counts;
+}
+
+export async function getTagCounts(
+  tags: Tag[]
+): Promise<Record<number, number>> {
+  const counts: Record<number, number> = {};
+  await Promise.all(
+    tags.map(async (t) => {
+      try {
+        const res = await queryIndexedFiles({ tag_ids: [t.id], page_size: 1 });
+        counts[t.id] = res.total;
+      } catch {
+        counts[t.id] = 0;
+      }
+    })
+  );
+  return counts;
+}
+
+
 
