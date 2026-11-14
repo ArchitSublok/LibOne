@@ -138,6 +138,72 @@ let mockFiles: IndexedFile[] = [
 
 let mockIdCounter = 100;
 
+let mockCollections: Collection[] = [
+  {
+    id: 1,
+    name: "Taxes & Finance",
+    description_nullable: "Financial documents and tax filings",
+    color_nullable: "#10b981",
+    created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+    updated_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+  },
+  {
+    id: 2,
+    name: "Legal",
+    description_nullable: "Contracts and legal agreements",
+    color_nullable: "#6366f1",
+    created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+    updated_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+  },
+];
+
+let mockTags: Tag[] = [
+  {
+    id: 1,
+    name: "important",
+    color_nullable: "#ef4444",
+    created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+  },
+  {
+    id: 2,
+    name: "review",
+    color_nullable: "#f59e0b",
+    created_at: new Date(Date.now() - 86400000 * 4).toISOString(),
+  },
+  {
+    id: 3,
+    name: "archive",
+    color_nullable: "#6b7280",
+    created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
+];
+
+let mockFileCollections: FileCollectionLink[] = [
+  {
+    file_id: 1,
+    collection_id: 1,
+    created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
+];
+
+let mockFileTags: FileTagLink[] = [
+  {
+    file_id: 1,
+    tag_id: 1,
+    created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
+];
+
+let mockNotes: FileNote[] = [
+  {
+    id: 1,
+    file_id: 1,
+    note_text: "Final submitted copy for fiscal year 2025.",
+    created_at: new Date(Date.now() - 86400000 * 1).toISOString(),
+    updated_at: new Date(Date.now() - 86400000 * 1).toISOString(),
+  },
+];
+
 // ── API functions ─────────────────────────────────────────────────────────────
 
 export async function getAppInfo(): Promise<AppInfo> {
@@ -435,6 +501,32 @@ export async function queryIndexedFiles(
         f.extension.toLowerCase().includes(q)
     );
   }
+  if (params.collection_id) {
+    const fileIdsInCol = new Set(
+      mockFileCollections
+        .filter((fc) => fc.collection_id === params.collection_id)
+        .map((fc) => fc.file_id)
+    );
+    result = result.filter((f) => fileIdsInCol.has(f.id));
+  }
+  if (params.tag_ids && params.tag_ids.length > 0) {
+    for (const tagId of params.tag_ids) {
+      const fileIdsWithTag = new Set(
+        mockFileTags
+          .filter((ft) => ft.tag_id === tagId)
+          .map((ft) => ft.file_id)
+      );
+      result = result.filter((f) => fileIdsWithTag.has(f.id));
+    }
+  }
+  if (params.has_notes !== undefined && params.has_notes !== null) {
+    const filesWithNotes = new Set(mockNotes.map((n) => n.file_id));
+    if (params.has_notes) {
+      result = result.filter((f) => filesWithNotes.has(f.id));
+    } else {
+      result = result.filter((f) => !filesWithNotes.has(f.id));
+    }
+  }
 
   // Sorting
   const sortBy = params.sort_by || "name";
@@ -614,4 +706,460 @@ export async function listenLibraryUpdated(
   }
   return () => {};
 }
+
+// ── Phase 2: Collections API ─────────────────────────────────────────────────
+
+export async function createCollection(
+  name: string,
+  description?: string | null,
+  color?: string | null
+): Promise<Collection> {
+  if (isTauriEnvironment()) {
+    return await invoke<Collection>("create_collection", {
+      name,
+      description: description ?? null,
+      color: color ?? null,
+    });
+  }
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Collection name cannot be empty.");
+  if (mockCollections.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
+    throw new Error(`A collection with the name '${trimmed}' already exists.`);
+  }
+  const now = new Date().toISOString();
+  const col: Collection = {
+    id: ++mockIdCounter,
+    name: trimmed,
+    description_nullable: description?.trim() || null,
+    color_nullable: color?.trim() || null,
+    created_at: now,
+    updated_at: now,
+  };
+  mockCollections.push(col);
+  return col;
+}
+
+export async function getCollection(id: number): Promise<Collection> {
+  if (isTauriEnvironment()) {
+    return await invoke<Collection>("get_collection", { id });
+  }
+  const col = mockCollections.find((c) => c.id === id);
+  if (!col) throw new Error(`Collection #${id} not found.`);
+  return col;
+}
+
+export async function listCollections(): Promise<Collection[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<Collection[]>("list_collections");
+  }
+  return [...mockCollections].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function updateCollection(
+  id: number,
+  name: string,
+  description?: string | null,
+  color?: string | null
+): Promise<Collection> {
+  if (isTauriEnvironment()) {
+    return await invoke<Collection>("update_collection", {
+      id,
+      name,
+      description: description ?? null,
+      color: color ?? null,
+    });
+  }
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Collection name cannot be empty.");
+  const col = mockCollections.find((c) => c.id === id);
+  if (!col) throw new Error(`Collection #${id} not found.`);
+  const duplicate = mockCollections.find(
+    (c) => c.id !== id && c.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error(`A collection with the name '${trimmed}' already exists.`);
+  }
+  col.name = trimmed;
+  col.description_nullable = description?.trim() || null;
+  col.color_nullable = color?.trim() || null;
+  col.updated_at = new Date().toISOString();
+  return col;
+}
+
+export async function deleteCollection(id: number): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("delete_collection", { id });
+  }
+  const idx = mockCollections.findIndex((c) => c.id === id);
+  if (idx === -1) throw new Error(`Collection #${id} not found.`);
+  mockCollections.splice(idx, 1);
+  mockFileCollections = mockFileCollections.filter((fc) => fc.collection_id !== id);
+}
+
+// ── Phase 2: Tags API ────────────────────────────────────────────────────────
+
+export async function createTag(
+  name: string,
+  color?: string | null
+): Promise<Tag> {
+  if (isTauriEnvironment()) {
+    return await invoke<Tag>("create_tag", {
+      name,
+      color: color ?? null,
+    });
+  }
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Tag name cannot be empty.");
+  if (mockTags.some((t) => t.name.toLowerCase() === trimmed.toLowerCase())) {
+    throw new Error(`A tag with the name '${trimmed}' already exists.`);
+  }
+  const tag: Tag = {
+    id: ++mockIdCounter,
+    name: trimmed,
+    color_nullable: color?.trim() || null,
+    created_at: new Date().toISOString(),
+  };
+  mockTags.push(tag);
+  return tag;
+}
+
+export async function getTag(id: number): Promise<Tag> {
+  if (isTauriEnvironment()) {
+    return await invoke<Tag>("get_tag", { id });
+  }
+  const tag = mockTags.find((t) => t.id === id);
+  if (!tag) throw new Error(`Tag #${id} not found.`);
+  return tag;
+}
+
+export async function listTags(): Promise<Tag[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<Tag[]>("list_tags");
+  }
+  return [...mockTags].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function updateTag(
+  id: number,
+  name: string,
+  color?: string | null
+): Promise<Tag> {
+  if (isTauriEnvironment()) {
+    return await invoke<Tag>("update_tag", {
+      id,
+      name,
+      color: color ?? null,
+    });
+  }
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Tag name cannot be empty.");
+  const tag = mockTags.find((t) => t.id === id);
+  if (!tag) throw new Error(`Tag #${id} not found.`);
+  const duplicate = mockTags.find(
+    (t) => t.id !== id && t.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error(`A tag with the name '${trimmed}' already exists.`);
+  }
+  tag.name = trimmed;
+  tag.color_nullable = color?.trim() || null;
+  return tag;
+}
+
+export async function deleteTag(id: number): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("delete_tag", { id });
+  }
+  const idx = mockTags.findIndex((t) => t.id === id);
+  if (idx === -1) throw new Error(`Tag #${id} not found.`);
+  mockTags.splice(idx, 1);
+  mockFileTags = mockFileTags.filter((ft) => ft.tag_id !== id);
+}
+
+// ── Phase 2: File-Collection Links API ───────────────────────────────────────
+
+export async function addFileToCollection(
+  fileId: number,
+  collectionId: number
+): Promise<FileCollectionLink> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileCollectionLink>("add_file_to_collection", {
+      fileId,
+      collectionId,
+    });
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found in library.`);
+  const col = mockCollections.find((c) => c.id === collectionId);
+  if (!col) throw new Error(`Collection #${collectionId} not found.`);
+  const existing = mockFileCollections.find(
+    (fc) => fc.file_id === fileId && fc.collection_id === collectionId
+  );
+  if (existing) return existing;
+  const link: FileCollectionLink = {
+    file_id: fileId,
+    collection_id: collectionId,
+    created_at: new Date().toISOString(),
+  };
+  mockFileCollections.push(link);
+  return link;
+}
+
+export async function removeFileFromCollection(
+  fileId: number,
+  collectionId: number
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("remove_file_from_collection", {
+      fileId,
+      collectionId,
+    });
+  }
+  mockFileCollections = mockFileCollections.filter(
+    (fc) => !(fc.file_id === fileId && fc.collection_id === collectionId)
+  );
+}
+
+export async function listFileCollections(fileId: number): Promise<Collection[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<Collection[]>("list_file_collections", { fileId });
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found in library.`);
+  const colIds = new Set(
+    mockFileCollections
+      .filter((fc) => fc.file_id === fileId)
+      .map((fc) => fc.collection_id)
+  );
+  return mockCollections.filter((c) => colIds.has(c.id));
+}
+
+export async function bulkAddFileCollections(
+  fileId: number,
+  collectionIds: number[]
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("bulk_add_file_collections", {
+      fileId,
+      collectionIds,
+    });
+  }
+  for (const cid of collectionIds) {
+    await addFileToCollection(fileId, cid);
+  }
+}
+
+export async function bulkRemoveFileCollections(
+  fileId: number,
+  collectionIds: number[]
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("bulk_remove_file_collections", {
+      fileId,
+      collectionIds,
+    });
+  }
+  const removeSet = new Set(collectionIds);
+  mockFileCollections = mockFileCollections.filter(
+    (fc) => !(fc.file_id === fileId && removeSet.has(fc.collection_id))
+  );
+}
+
+export async function setFileCollections(
+  fileId: number,
+  collectionIds: number[]
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("set_file_collections", {
+      fileId,
+      collectionIds,
+    });
+  }
+  mockFileCollections = mockFileCollections.filter((fc) => fc.file_id !== fileId);
+  for (const cid of collectionIds) {
+    await addFileToCollection(fileId, cid);
+  }
+}
+
+// ── Phase 2: File-Tag Links API ──────────────────────────────────────────────
+
+export async function addFileToTag(
+  fileId: number,
+  tagId: number
+): Promise<FileTagLink> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileTagLink>("add_file_to_tag", {
+      fileId,
+      tagId,
+    });
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found in library.`);
+  const tag = mockTags.find((t) => t.id === tagId);
+  if (!tag) throw new Error(`Tag #${tagId} not found.`);
+  const existing = mockFileTags.find(
+    (ft) => ft.file_id === fileId && ft.tag_id === tagId
+  );
+  if (existing) return existing;
+  const link: FileTagLink = {
+    file_id: fileId,
+    tag_id: tagId,
+    created_at: new Date().toISOString(),
+  };
+  mockFileTags.push(link);
+  return link;
+}
+
+export async function removeFileFromTag(
+  fileId: number,
+  tagId: number
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("remove_file_from_tag", {
+      fileId,
+      tagId,
+    });
+  }
+  mockFileTags = mockFileTags.filter(
+    (ft) => !(ft.file_id === fileId && ft.tag_id === tagId)
+  );
+}
+
+export async function listFileTags(fileId: number): Promise<Tag[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<Tag[]>("list_file_tags", { fileId });
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found in library.`);
+  const tagIds = new Set(
+    mockFileTags
+      .filter((ft) => ft.file_id === fileId)
+      .map((ft) => ft.tag_id)
+  );
+  return mockTags.filter((t) => tagIds.has(t.id));
+}
+
+export async function bulkAddFileTags(
+  fileId: number,
+  tagIds: number[]
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("bulk_add_file_tags", {
+      fileId,
+      tagIds,
+    });
+  }
+  for (const tid of tagIds) {
+    await addFileToTag(fileId, tid);
+  }
+}
+
+export async function bulkRemoveFileTags(
+  fileId: number,
+  tagIds: number[]
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("bulk_remove_file_tags", {
+      fileId,
+      tagIds,
+    });
+  }
+  const removeSet = new Set(tagIds);
+  mockFileTags = mockFileTags.filter(
+    (ft) => !(ft.file_id === fileId && removeSet.has(ft.tag_id))
+  );
+}
+
+export async function setFileTags(
+  fileId: number,
+  tagIds: number[]
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("set_file_tags", {
+      fileId,
+      tagIds,
+    });
+  }
+  mockFileTags = mockFileTags.filter((ft) => ft.file_id !== fileId);
+  for (const tid of tagIds) {
+    await addFileToTag(fileId, tid);
+  }
+}
+
+// ── Phase 2: File Notes API ──────────────────────────────────────────────────
+
+export async function createFileNote(
+  fileId: number,
+  noteText: string
+): Promise<FileNote> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileNote>("create_file_note", {
+      fileId,
+      noteText,
+    });
+  }
+  const trimmed = noteText.trim();
+  if (!trimmed) throw new Error("Note content cannot be empty.");
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found in library.`);
+  const now = new Date().toISOString();
+  const note: FileNote = {
+    id: ++mockIdCounter,
+    file_id: fileId,
+    note_text: trimmed,
+    created_at: now,
+    updated_at: now,
+  };
+  mockNotes.push(note);
+  return note;
+}
+
+export async function getFileNote(noteId: number): Promise<FileNote> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileNote>("get_file_note", { noteId });
+  }
+  const note = mockNotes.find((n) => n.id === noteId);
+  if (!note) throw new Error(`Note #${noteId} not found.`);
+  return note;
+}
+
+export async function listFileNotes(fileId: number): Promise<FileNote[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileNote[]>("list_file_notes", { fileId });
+  }
+  const file = mockFiles.find((f) => f.id === fileId);
+  if (!file) throw new Error(`Indexed file #${fileId} not found in library.`);
+  return mockNotes
+    .filter((n) => n.file_id === fileId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+export async function updateFileNote(
+  noteId: number,
+  noteText: string
+): Promise<FileNote> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileNote>("update_file_note", {
+      noteId,
+      noteText,
+    });
+  }
+  const trimmed = noteText.trim();
+  if (!trimmed) throw new Error("Note content cannot be empty.");
+  const note = mockNotes.find((n) => n.id === noteId);
+  if (!note) throw new Error(`Note #${noteId} not found.`);
+  note.note_text = trimmed;
+  note.updated_at = new Date().toISOString();
+  return note;
+}
+
+export async function deleteFileNote(noteId: number): Promise<void> {
+  if (isTauriEnvironment()) {
+    return await invoke<void>("delete_file_note", { noteId });
+  }
+  const idx = mockNotes.findIndex((n) => n.id === noteId);
+  if (idx === -1) throw new Error(`Note #${noteId} not found.`);
+  mockNotes.splice(idx, 1);
+}
+
 

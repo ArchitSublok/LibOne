@@ -826,10 +826,17 @@ pub fn create_collection_inner(
     if trimmed.is_empty() {
         return Err("Collection name cannot be empty.".to_string());
     }
-    if db.get_collection_by_name(trimmed).map_err(db_err)?.is_some() {
-        return Err(format!("A collection with the name '{trimmed}' already exists."));
+    if db
+        .get_collection_by_name(trimmed)
+        .map_err(db_err)?
+        .is_some()
+    {
+        return Err(format!(
+            "A collection with the name '{trimmed}' already exists."
+        ));
     }
-    db.create_collection(trimmed, description, color).map_err(db_err)
+    db.create_collection(trimmed, description, color)
+        .map_err(db_err)
 }
 
 #[tauri::command]
@@ -883,11 +890,14 @@ pub fn update_collection_inner(
 
     if let Some(other) = db.get_collection_by_name(trimmed).map_err(db_err)? {
         if other.id != existing.id {
-            return Err(format!("A collection with the name '{trimmed}' already exists."));
+            return Err(format!(
+                "A collection with the name '{trimmed}' already exists."
+            ));
         }
     }
 
-    db.update_collection(id, trimmed, description, color).map_err(db_err)
+    db.update_collection(id, trimmed, description, color)
+        .map_err(db_err)
 }
 
 #[tauri::command]
@@ -1059,10 +1069,7 @@ pub fn remove_file_from_collection(
     remove_file_from_collection_inner(&db, file_id, collection_id)
 }
 
-pub fn list_file_collections_inner(
-    db: &Database,
-    file_id: i64,
-) -> Result<Vec<Collection>, String> {
+pub fn list_file_collections_inner(db: &Database, file_id: i64) -> Result<Vec<Collection>, String> {
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1177,11 +1184,7 @@ pub fn add_file_to_tag(
     add_file_to_tag_inner(&db, file_id, tag_id)
 }
 
-pub fn remove_file_from_tag_inner(
-    db: &Database,
-    file_id: i64,
-    tag_id: i64,
-) -> Result<(), String> {
+pub fn remove_file_from_tag_inner(db: &Database, file_id: i64, tag_id: i64) -> Result<(), String> {
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1259,11 +1262,7 @@ pub fn bulk_remove_file_tags(
     bulk_remove_file_tags_inner(&db, file_id, &tag_ids)
 }
 
-pub fn set_file_tags_inner(
-    db: &Database,
-    file_id: i64,
-    tag_ids: &[i64],
-) -> Result<(), String> {
+pub fn set_file_tags_inner(db: &Database, file_id: i64, tag_ids: &[i64]) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
     for &tid in tag_ids {
         if db.get_tag(tid).map_err(db_err)?.is_none() {
@@ -1817,12 +1816,19 @@ mod tests {
         let dir = temp_auth_dir("cmd_disabled_root");
         let (db, db_dir) = test_auth_db("cmd_disabled_root");
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Test Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Test Root")
+            .unwrap();
         let file = db
             .insert_indexed_file(&crate::models::NewIndexedFile {
                 scan_root_id: root.id,
                 absolute_path: dir.join("doc.pdf").to_str().unwrap().into(),
-                normalized_path: dir.join("doc.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                normalized_path: dir
+                    .join("doc.pdf")
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
                 file_name: "doc.pdf".into(),
                 extension: "pdf".into(),
                 size_bytes: 100,
@@ -1867,7 +1873,12 @@ mod tests {
             .insert_indexed_file(&crate::models::NewIndexedFile {
                 scan_root_id: root.id,
                 absolute_path: dir.join("f.pdf").to_str().unwrap().into(),
-                normalized_path: dir.join("f.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                normalized_path: dir
+                    .join("f.pdf")
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
                 file_name: "f.pdf".into(),
                 extension: "pdf".into(),
                 size_bytes: 100,
@@ -1915,12 +1926,19 @@ mod tests {
         let dir = temp_auth_dir("cmd_full_flow");
         let (db, db_dir) = test_auth_db("cmd_full_flow");
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Full Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Full Root")
+            .unwrap();
         let f1 = db
             .insert_indexed_file(&crate::models::NewIndexedFile {
                 scan_root_id: root.id,
                 absolute_path: dir.join("invoice.pdf").to_str().unwrap().into(),
-                normalized_path: dir.join("invoice.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                normalized_path: dir
+                    .join("invoice.pdf")
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
                 file_name: "invoice.pdf".into(),
                 extension: "pdf".into(),
                 size_bytes: 256,
@@ -1933,12 +1951,15 @@ mod tests {
             .unwrap();
 
         // Collections CRUD
-        let c1 = create_collection_inner(&db, "Invoices", Some("Incoming invoices"), Some("#3b82f6")).unwrap();
+        let c1 =
+            create_collection_inner(&db, "Invoices", Some("Incoming invoices"), Some("#3b82f6"))
+                .unwrap();
         assert_eq!(c1.name, "Invoices");
         let c_list = list_collections_inner(&db).unwrap();
         assert_eq!(c_list.len(), 1);
 
-        let c1_up = update_collection_inner(&db, c1.id, "Paid Invoices", None, Some("#10b981")).unwrap();
+        let c1_up =
+            update_collection_inner(&db, c1.id, "Paid Invoices", None, Some("#10b981")).unwrap();
         assert_eq!(c1_up.name, "Paid Invoices");
 
         // Tags CRUD
