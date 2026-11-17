@@ -1283,6 +1283,11 @@ pub fn set_file_tags(
 }
 
 // ── Phase 2: File Notes ───────────────────────────────────────────────────────
+//
+// Notes are strictly user-authored private text. They are stored in the local
+// SQLite database only, keyed by indexed file ID, and never written to or
+// derived from the original document. No extraction pipeline calls into these
+// commands.
 
 pub fn create_file_note_inner(
     db: &Database,
@@ -2001,6 +2006,118 @@ mod tests {
             .unwrap();
         assert_eq!(query_res.total, 1);
         assert_eq!(query_res.files[0].id, f1.id);
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_file_notes_crud_validation_missing_files_and_persistence() {
+        let dir = temp_auth_dir("cmd_notes_lifecycle");
+        let (db, db_dir) = test_auth_db("cmd_notes_lifecycle");
+        let file_path = dir.join("notes_target.pdf");
+        fs::write(&file_path, b"%PDF-1.4 note target").unwrap();
+
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Notes Root")
+            .unwrap();
+        let file = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: file_path.to_str().unwrap().to_string(),
+                normalized_path: file_path
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
+                file_name: "notes_target.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 19,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        // Create: text is trimmed, timestamps are populated, multiple notes allowed.
+        let first = create_file_note_inner(&db, file.id, "  First private note  ").unwrap();
+        assert_eq!(first.note_text, "First private note");
+        assert_eq!(first.file_id, file.id);
+        assert_eq!(first.created_at, first.updated_at);
+
+        let second = create_file_note_inner(&db, file.id, "Second private note").unwrap();
+        let listed = list_file_notes_inner(&db, file.id).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, second.id, "newest note should be first");
+
+        // Edit.
+        let edited = update_file_note_inner(&db, first.id, " Edited private note ").unwrap();
+        assert_eq!(edited.note_text, "Edited private note");
+        assert!(edited.updated_at >= edited.created_at);
+        assert_eq!(
+            get_file_note_inner(&db, first.id).unwrap().note_text,
+            "Edited private note"
+        );
+
+        // Delete.
+        delete_file_note_inner(&db, second.id).unwrap();
+        assert_eq!(list_file_notes_inner(&db, file.id).unwrap().len(), 1);
+
+        // Empty content is rejected on create and update.
+        assert!(create_file_note_inner(&db, file.id, " \n\t ")
+            .unwrap_err()
+            .contains("cannot be empty"));
+        assert!(update_file_note_inner(&db, first.id, "   ")
+            .unwrap_err()
+            .contains("cannot be empty"));
+
+        // Invalid file IDs are rejected by the backend.
+        assert!(create_file_note_inner(&db, 999_999, "x")
+            .unwrap_err()
+            .contains("not found in library"));
+        assert!(list_file_notes_inner(&db, 999_999)
+            .unwrap_err()
+            .contains("not found in library"));
+
+        // Invalid note IDs are rejected by the backend.
+        assert!(get_file_note_inner(&db, 999_999)
+            .unwrap_err()
+            .contains("Note #999999 not found"));
+        assert!(update_file_note_inner(&db, 999_999, "x")
+            .unwrap_err()
+            .contains("Note #999999 not found"));
+        assert!(delete_file_note_inner(&db, 999_999)
+            .unwrap_err()
+            .contains("Note #999999 not found"));
+
+        // Missing original file: notes stay readable and editable, and the file is never recreated.
+        fs::remove_file(&file_path).unwrap();
+        assert!(!file_path.exists());
+        let missing_notes = list_file_notes_inner(&db, file.id).unwrap();
+        assert_eq!(missing_notes.len(), 1);
+        let edited_missing =
+            update_file_note_inner(&db, first.id, "Note about a missing file").unwrap();
+        assert_eq!(edited_missing.note_text, "Note about a missing file");
+        assert!(
+            !file_path.exists(),
+            "note operations must never recreate or modify the original file"
+        );
+        assert_eq!(
+            db.get_indexed_file(file.id).unwrap().unwrap().status,
+            "indexed",
+            "note operations must not change indexed file metadata"
+        );
+
+        // Persistence after a full database reload.
+        drop(db);
+        let reopened = Database::new(&db_dir).unwrap();
+        let persisted = list_file_notes_inner(&reopened, file.id).unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].note_text, "Note about a missing file");
+        delete_file_note_inner(&reopened, first.id).unwrap();
+        assert!(list_file_notes_inner(&reopened, file.id).unwrap().is_empty());
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);

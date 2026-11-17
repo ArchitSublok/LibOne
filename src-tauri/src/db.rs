@@ -933,7 +933,7 @@ impl Database {
     pub fn list_file_notes(&self, file_id: i64) -> Result<Vec<FileNote>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, note_text, created_at, updated_at FROM file_notes WHERE file_id=?1 ORDER BY created_at ASC, id ASC",
+            "SELECT id, file_id, note_text, created_at, updated_at FROM file_notes WHERE file_id=?1 ORDER BY created_at DESC, id DESC",
         )?;
         let rows = stmt.query_map(params![file_id], note_from_row)?;
         rows.collect()
@@ -1728,6 +1728,88 @@ mod tests {
         d.delete_file_note(note.id).unwrap();
         assert!(d.get_file_note(note.id).unwrap().is_none());
         assert_eq!(d.list_file_notes(f1.id).unwrap().len(), 0);
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn file_notes_persist_across_reopen_and_support_multiple_notes() {
+        let (d, p) = db();
+        let r = d.add_scan_root(r"C:\Notes", "Notes").unwrap();
+        let f1 = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: r"C:\Notes\persisted.pdf".into(),
+                normalized_path: normalize(r"C:\Notes\persisted.pdf"),
+                file_name: "persisted.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 10,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+        let f2 = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: r"C:\Notes\other.pdf".into(),
+                normalized_path: normalize(r"C:\Notes\other.pdf"),
+                file_name: "other.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 20,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let first = d.create_file_note(f1.id, "First note").unwrap();
+        let second = d.create_file_note(f1.id, "Second note").unwrap();
+        let other = d.create_file_note(f2.id, "Note on another file").unwrap();
+        assert_eq!(first.created_at, first.updated_at);
+
+        // Notes are scoped per file and listed newest first.
+        let listed = d.list_file_notes(f1.id).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, second.id);
+        assert_eq!(listed[1].id, first.id);
+        assert_eq!(d.list_file_notes(f2.id).unwrap().len(), 1);
+
+        let edited = d.update_file_note(first.id, "First note edited").unwrap();
+        assert_eq!(edited.note_text, "First note edited");
+        assert!(edited.updated_at >= edited.created_at);
+
+        // Re-open the same SQLite file: notes must survive a reload.
+        drop(d);
+        let reopened = Database::new(&p).unwrap();
+        let persisted = reopened.list_file_notes(f1.id).unwrap();
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|n| n.id == first.id)
+                .unwrap()
+                .note_text,
+            "First note edited"
+        );
+        assert_eq!(reopened.list_file_notes(f2.id).unwrap().len(), 1);
+
+        reopened.delete_file_note(second.id).unwrap();
+        drop(reopened);
+
+        let reopened_again = Database::new(&p).unwrap();
+        assert_eq!(reopened_again.list_file_notes(f1.id).unwrap().len(), 1);
+        assert!(reopened_again.get_file_note(second.id).unwrap().is_none());
+        assert!(reopened_again.get_file_note(other.id).unwrap().is_some());
+
+        // Repository-level invalid note IDs are reported safely.
+        assert!(reopened_again.get_file_note(999_999).unwrap().is_none());
+        assert!(reopened_again.update_file_note(999_999, "x").is_err());
+        reopened_again.delete_file_note(999_999).unwrap();
 
         std::fs::remove_dir_all(p).unwrap();
     }
