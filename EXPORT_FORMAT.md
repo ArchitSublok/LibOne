@@ -1,7 +1,7 @@
 # LibOne Portable Metadata Export Format Specification
 
-**Format Version**: `1.0.0`  
-**MIME Type**: `application/json`  
+**Format Version**: `1.1.0`
+**MIME Type**: `application/json`
 **File Extension**: `.json`
 
 ---
@@ -11,10 +11,12 @@
 LibOne provides a portable, human-readable JSON export format for library metadata. This specification defines the schema, field types, semantic rules, and forward/backward compatibility guarantees.
 
 ### Non-Destructive Privacy Guarantees
-- **Metadata Only**: LibOne never stores, embeds, or exports document contents. Exports contain only filesystem metadata (file paths, filenames, extensions, byte sizes, modification timestamps, hashes where computed, and indexing status).
-- **Zero Cloud Leakage**: Exports are generated locally on-demand and saved directly to the user's chosen local filesystem path via a native save-file dialog.
-- **Atomic Persistence**: Serialized JSON is written to a temporary sibling file (`.libone-export-<nanos>.tmp`) and atomically renamed to the final path, preventing partial or corrupt export files in case of system power loss or interruption.
-- **Validation Before Writing**: Export models are structurally validated in-memory before any bytes are written to disk.
+
+- **Metadata Only**: LibOne never stores, embeds, or exports document contents. Exports contain only filesystem metadata (paths, filenames, extensions, byte sizes, timestamps, hashes where computed, indexing status) plus user-authored organization metadata (collections, tags, links, and private notes).
+- **User-Authored Notes Only**: `file_notes[].note_text` is written only by the user. No automatically extracted document content is ever placed in a note.
+- **Zero Cloud Leakage**: Exports are generated locally on demand and saved directly to the user's chosen local filesystem path.
+- **Atomic Persistence**: Serialized JSON is written to a temporary sibling file (`.libone-export-<nanos>.tmp`) and atomically renamed to the final path, preventing partial or corrupt export files.
+- **Validation Before Writing**: The complete export model is validated in memory before any bytes are written to disk.
 
 ---
 
@@ -22,15 +24,15 @@ LibOne provides a portable, human-readable JSON export format for library metada
 
 ```json
 {
-  "format_version": "1.0.0",
+  "format_version": "1.1.0",
   "app": "LibOne",
   "version": "0.1.0",
-  "exported_at": "2026-11-13T10:00:00.000Z",
+  "exported_at": "2026-11-17T10:00:00.000Z",
   "summary": {
     "total_roots": 1,
     "total_files": 2,
     "total_size_bytes": 1048800,
-    "export_timestamp": "2026-11-13T10:00:00.000Z"
+    "export_timestamp": "2026-11-17T10:00:00.000Z"
   },
   "scan_roots": [
     {
@@ -39,8 +41,8 @@ LibOne provides a portable, human-readable JSON export format for library metada
       "display_name": "Research",
       "enabled": true,
       "created_at": "2026-11-10T08:30:00.000Z",
-      "last_scan_started_at": "2026-11-13T09:45:00.000Z",
-      "last_scan_completed_at": "2026-11-13T09:45:02.000Z",
+      "last_scan_started_at": "2026-11-17T09:45:00.000Z",
+      "last_scan_completed_at": "2026-11-17T09:45:02.000Z",
       "last_scan_status": "completed",
       "file_count": 2
     }
@@ -57,7 +59,7 @@ LibOne provides a portable, human-readable JSON export format for library metada
       "modified_at": "2026-11-12T14:20:00.000Z",
       "created_at_if_available": "2026-11-10T09:00:00.000Z",
       "discovered_at": "2026-11-10T09:05:00.000Z",
-      "last_seen_at": "2026-11-13T09:45:01.000Z",
+      "last_seen_at": "2026-11-17T09:45:01.000Z",
       "content_hash_nullable": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "file_id_nullable": "0028a1f4:000000000014ef02",
       "status": "indexed"
@@ -73,10 +75,62 @@ LibOne provides a portable, human-readable JSON export format for library metada
       "modified_at": "2026-11-13T09:30:00.000Z",
       "created_at_if_available": "2026-11-13T09:25:00.000Z",
       "discovered_at": "2026-11-13T09:45:01.000Z",
-      "last_seen_at": "2026-11-13T09:45:01.000Z",
+      "last_seen_at": "2026-11-17T09:45:01.000Z",
       "content_hash_nullable": null,
       "file_id_nullable": "0028a1f4:000000000014ef03",
       "status": "indexed"
+    }
+  ],
+  "collections": [
+    {
+      "id": 10,
+      "name": "Finance",
+      "description_nullable": "Tax and reporting documents",
+      "color_nullable": "#10b981",
+      "created_at": "2026-11-10T08:35:00.000Z",
+      "updated_at": "2026-11-10T08:35:00.000Z"
+    }
+  ],
+  "tags": [
+    {
+      "id": 20,
+      "name": "reviewed",
+      "color_nullable": "#f59e0b",
+      "created_at": "2026-11-10T08:36:00.000Z"
+    },
+    {
+      "id": 21,
+      "name": "important",
+      "color_nullable": "#ef4444",
+      "created_at": "2026-11-10T08:37:00.000Z"
+    }
+  ],
+  "file_collections": [
+    {
+      "file_id": 101,
+      "collection_id": 10,
+      "created_at": "2026-11-10T08:40:00.000Z"
+    }
+  ],
+  "file_tags": [
+    {
+      "file_id": 101,
+      "tag_id": 20,
+      "created_at": "2026-11-10T08:41:00.000Z"
+    },
+    {
+      "file_id": 101,
+      "tag_id": 21,
+      "created_at": "2026-11-10T08:42:00.000Z"
+    }
+  ],
+  "file_notes": [
+    {
+      "id": 30,
+      "file_id": 101,
+      "note_text": "Approved by accounting on 2026-11-15.",
+      "created_at": "2026-11-15T11:00:00.000Z",
+      "updated_at": "2026-11-16T09:30:00.000Z"
     }
   ]
 }
@@ -90,13 +144,18 @@ LibOne provides a portable, human-readable JSON export format for library metada
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `format_version` | String | Yes | Semantic version of this export schema (e.g. `"1.0.0"`). |
+| `format_version` | String | Yes | Semantic version of this export schema (`"1.1.0"` for this revision). |
 | `app` | String | Yes | Identifier of the emitting application (always `"LibOne"`). |
 | `version` | String | Yes | Cargo package release version of the LibOne build that produced this export. |
 | `exported_at` | String (ISO 8601 UTC) | Yes | Timestamp when the export was initiated. |
 | `summary` | Object | Yes | Aggregate statistics describing the exported library snapshot. |
-| `scan_roots` | Array of ScanRoot | Yes | List of user-authorized scan roots recorded in the library. |
-| `files` | Array of IndexedFile | Yes | Complete list of all indexed regular files recorded in the library. |
+| `scan_roots` | Array of ScanRoot | Yes | User-authorized scan roots recorded in the library. |
+| `files` | Array of IndexedFile | Yes | All indexed file records (Phase 1 fields, unchanged). |
+| `collections` | Array of Collection | Yes (1.1.0+) | User-created collections. |
+| `tags` | Array of Tag | Yes (1.1.0+) | User-created tags. |
+| `file_collections` | Array of FileCollectionLink | Yes (1.1.0+) | Many-to-many links between files and collections. |
+| `file_tags` | Array of FileTagLink | Yes (1.1.0+) | Many-to-many links between files and tags. |
+| `file_notes` | Array of FileNote | Yes (1.1.0+) | User-authored private notes. |
 
 ### 3.2 `summary` Object
 
@@ -118,7 +177,7 @@ LibOne provides a portable, human-readable JSON export format for library metada
 | `created_at` | String (ISO 8601) | When the folder was added to LibOne. |
 | `last_scan_started_at` | String or `null` | Start timestamp of the most recent scan. |
 | `last_scan_completed_at` | String or `null` | Completion timestamp of the most recent scan. |
-| `last_scan_status` | String | Final status of the last scan (`completed`, `cancelled`, `error`, `never_scanned`). |
+| `last_scan_status` | String | Final status (`completed`, `cancelled`, `error`, `never_scanned`). |
 | `file_count` | Integer | Number of non-missing files indexed in this root. |
 
 ### 3.4 `files[]` Object
@@ -126,46 +185,95 @@ LibOne provides a portable, human-readable JSON export format for library metada
 | Field | Type | Description |
 |---|---|---|
 | `id` | Integer | Local database ID of the file record. |
-| `scan_root_id` | Integer | Foreign key linking to parent `scan_roots.id`. |
-| `absolute_path` | String | Exact path to the document file on the host filesystem. |
-| `normalized_path` | String | Lowercase backslash-normalized path used for fast lookups. |
+| `scan_root_id` | Integer | Foreign key linking to `scan_roots.id`. |
+| `absolute_path` | String | Exact path to the document on the host filesystem. |
+| `normalized_path` | String | Lowercase backslash-normalized path used for lookups. |
 | `file_name` | String | File basename including extension. |
-| `extension` | String | File extension without leading dot (lowercase). |
-| `size_bytes` | Integer | File size in bytes as reported by the filesystem. |
+| `extension` | String | Extension without leading dot (lowercase). |
+| `size_bytes` | Integer | File size in bytes reported by the filesystem. |
 | `modified_at` | String or `null` | Last modified timestamp from filesystem metadata. |
 | `created_at_if_available` | String or `null` | Creation timestamp if supported by the host volume. |
-| `discovered_at` | String (ISO 8601) | Timestamp when LibOne first discovered this file. |
-| `last_seen_at` | String (ISO 8601) | Timestamp when LibOne last confirmed this file on disk. |
+| `discovered_at` | String (ISO 8601) | Timestamp when LibOne first discovered the file. |
+| `last_seen_at` | String (ISO 8601) | Timestamp when LibOne last confirmed the file on disk. |
 | `content_hash_nullable` | String or `null` | Hex-encoded SHA-256 digest if computed; `null` otherwise. |
-| `file_id_nullable` | String or `null` | Win32 volume serial and 64-bit file index (`"{vol:08x}:{idx:016x}"`) if on NTFS; `null` on FAT32/exFAT. |
-| `status` | String | Document status: `indexed`, `changed`, `missing`, `inaccessible`, `error`. |
+| `file_id_nullable` | String or `null` | Win32 volume serial and file index if on NTFS; `null` otherwise. |
+| `status` | String | `indexed`, `changed`, `missing`, `inaccessible`, or `error`. |
+
+### 3.5 `collections[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Integer | Local database ID of the collection. |
+| `name` | String | User-provided collection name. |
+| `description_nullable` | String or `null` | Optional description. |
+| `color_nullable` | String or `null` | Optional display color. |
+| `created_at` | String (ISO 8601) | Creation timestamp. |
+| `updated_at` | String (ISO 8601) | Last update timestamp. |
+
+### 3.6 `tags[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Integer | Local database ID of the tag. |
+| `name` | String | User-provided tag name. |
+| `color_nullable` | String or `null` | Optional display color. |
+| `created_at` | String (ISO 8601) | Creation timestamp. |
+
+### 3.7 `file_collections[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `file_id` | Integer | Foreign key to `files.id`. |
+| `collection_id` | Integer | Foreign key to `collections.id`. |
+| `created_at` | String (ISO 8601) | When the link was created. |
+
+### 3.8 `file_tags[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `file_id` | Integer | Foreign key to `files.id`. |
+| `tag_id` | Integer | Foreign key to `tags.id`. |
+| `created_at` | String (ISO 8601) | When the link was created. |
+
+### 3.9 `file_notes[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Integer | Local database ID of the note. |
+| `file_id` | Integer | Foreign key to `files.id`. |
+| `note_text` | String | User-authored note text; never extracted document content. |
+| `created_at` | String (ISO 8601) | Creation timestamp. |
+| `updated_at` | String (ISO 8601) | Last edit timestamp. |
 
 ---
 
 ## 4. Semantic Compatibility Rules
 
-LibOne follows Semantic Versioning (`MAJOR.MINOR.PATCH`) for the metadata format:
+LibOne follows Semantic Versioning (`MAJOR.MINOR.PATCH`) for the metadata format.
 
-1. **Backwards Compatibility (Same Major Version `1.x.y`)**:
-   - Consumers reading `1.x.y` MUST ignore unknown fields.
-   - Future `1.x.y` revisions may add optional keys to objects or new arrays, but will NEVER remove or rename existing fields.
-   - Types of existing fields (`string`, `integer`, `boolean`, `null`) will remain stable.
+1. **Same Major Version (`1.x.y`)**:
+   - Consumers MUST ignore unknown fields.
+   - `1.1.0` adds `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`. These arrays were absent in `1.0.0`; readers of older exports must treat a missing array as empty.
+   - No Phase 1 field is removed or renamed, and existing field types remain stable.
 
-2. **Breaking Changes (Major Version Bump `2.0.0`)**:
-   - Any structural re-architecture, field removal, or semantic type changes will increment the major version number.
-   - Tools parsing LibOne exports should inspect `format_version` before ingesting. If the major version is greater than what the consumer supports, the consumer should halt or warn the user.
+2. **Breaking Changes (`2.0.0`)**:
+   - Field removal, renaming, or type changes require a major version bump.
+   - Consumers should inspect `format_version` before ingesting. If the major version is unsupported, halt or warn the user.
 
 3. **Validation Requirements**:
-   - A valid export MUST satisfy:
-     - `summary.total_roots == scan_roots.length`
-     - `summary.total_files == files.length`
-     - `format_version`, `app`, `version`, `exported_at` are non-empty strings.
-     - `summary.total_size_bytes` equals the sum of `files[i].size_bytes`.
+   A valid export MUST satisfy all of the following:
+   - `format_version`, `app`, `version`, and `exported_at` are non-empty strings.
+   - `summary.total_roots == scan_roots.length`.
+   - `summary.total_files == files.length`.
+   - `summary.total_size_bytes == sum(files[i].size_bytes)`.
+   - `summary.export_timestamp == exported_at`.
+   - All IDs referenced by files, links, and notes exist in their corresponding arrays; link pairs and note IDs are unique.
+   - Collection/tag names and note text are non-empty.
 
 ---
 
 ## 5. Portability & Interoperability
 
-- **Standard Tools**: Because the export is valid UTF-8 formatted JSON with indentation, it can be processed directly by `jq`, Python (`json.load`), PowerShell (`ConvertFrom-Json`), Node.js, and data science notebooks.
-- **Migration & Offline Archiving**: Users can archive export JSON files alongside cold-storage backups or use them to audit library contents without needing access to the live SQLite database.
-- **No Proprietary Encodings**: Dates use standard ISO 8601 UTC strings (`YYYY-MM-DDTHH:MM:SS.sssZ`), byte sizes are unformatted 64-bit integers, and boolean flags are literal `true`/`false`.
+- **Standard Tools**: Valid UTF-8 JSON with indentation can be processed by `jq`, Python (`json.load`), PowerShell (`ConvertFrom-Json`), Node.js, and data science notebooks.
+- **Offline Archiving**: Users can archive exports alongside cold-storage backups or audit library metadata without the live SQLite database.
+- **No Proprietary Encodings**: Dates are ISO 8601 UTC strings, byte sizes are 64-bit integers, and boolean flags are literal `true`/`false`.

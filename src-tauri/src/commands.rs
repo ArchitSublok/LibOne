@@ -3,7 +3,7 @@
 //! all path validation is delegated to `validate.rs`;
 //! all file crawling is delegated to `scanner.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -668,33 +668,122 @@ pub fn open_file_in_default_app(
 // ── Export ────────────────────────────────────────────────────────────────────
 
 /// Validates that a LibraryExport is well-formed before serialization.
+///
+/// This guards both the Phase 1 fields and the Phase 2 organization/notes
+/// arrays, including referential integrity between files, collections, tags,
+/// links, and notes.
 fn validate_export(export: &LibraryExport) -> Result<(), String> {
+    fn invalid(message: impl AsRef<str>) -> Result<(), String> {
+        Err(format!(
+            "Export validation failed: {}",
+            message.as_ref()
+        ))
+    }
+
     if export.format_version.is_empty() {
-        return Err("Export validation failed: missing format_version".into());
+        return invalid("missing format_version");
     }
     if export.app.is_empty() {
-        return Err("Export validation failed: missing app name".into());
+        return invalid("missing app name");
     }
     if export.version.is_empty() {
-        return Err("Export validation failed: missing app version".into());
+        return invalid("missing app version");
     }
     if export.exported_at.is_empty() {
-        return Err("Export validation failed: missing export timestamp".into());
+        return invalid("missing export timestamp");
+    }
+    if export.summary.export_timestamp != export.exported_at {
+        return invalid("summary export_timestamp does not match exported_at");
     }
     if export.summary.total_roots != export.scan_roots.len() {
-        return Err(format!(
-            "Export validation failed: summary total_roots ({}) does not match scan_roots length ({})",
+        return invalid(format!(
+            "summary total_roots ({}) does not match scan_roots length ({})",
             export.summary.total_roots,
             export.scan_roots.len()
         ));
     }
     if export.summary.total_files != export.files.len() {
-        return Err(format!(
-            "Export validation failed: summary total_files ({}) does not match files length ({})",
+        return invalid(format!(
+            "summary total_files ({}) does not match files length ({})",
             export.summary.total_files,
             export.files.len()
         ));
     }
+    let expected_size: i64 = export.files.iter().map(|f| f.size_bytes).sum();
+    if export.summary.total_size_bytes != expected_size {
+        return invalid(format!(
+            "summary total_size_bytes ({}) does not match the sum of file sizes ({expected_size})",
+            export.summary.total_size_bytes
+        ));
+    }
+
+    let root_ids: HashSet<i64> = export.scan_roots.iter().map(|r| r.id).collect();
+    if export.scan_roots.iter().any(|r| r.id <= 0) || root_ids.len() != export.scan_roots.len() {
+        return invalid("scan_roots must have unique positive IDs");
+    }
+
+    let file_ids: HashSet<i64> = export.files.iter().map(|f| f.id).collect();
+    if export.files.iter().any(|f| f.id <= 0) || file_ids.len() != export.files.len() {
+        return invalid("files must have unique positive IDs");
+    }
+    if export
+        .files
+        .iter()
+        .any(|f| f.scan_root_id <= 0 || !root_ids.contains(&f.scan_root_id))
+    {
+        return invalid("file references an unknown scan_root_id");
+    }
+
+    let collection_ids: HashSet<i64> = export.collections.iter().map(|c| c.id).collect();
+    if export.collections.iter().any(|c| c.id <= 0 || c.name.trim().is_empty())
+        || collection_ids.len() != export.collections.len()
+    {
+        return invalid("collections must have unique positive IDs and non-empty names");
+    }
+
+    let tag_ids: HashSet<i64> = export.tags.iter().map(|t| t.id).collect();
+    if export.tags.iter().any(|t| t.id <= 0 || t.name.trim().is_empty())
+        || tag_ids.len() != export.tags.len()
+    {
+        return invalid("tags must have unique positive IDs and non-empty names");
+    }
+
+    let mut seen_collection_links: HashSet<(i64, i64)> = HashSet::new();
+    for link in &export.file_collections {
+        if !file_ids.contains(&link.file_id) || !collection_ids.contains(&link.collection_id) {
+            return invalid("file_collections contains an unknown file_id or collection_id");
+        }
+        if !seen_collection_links.insert((link.file_id, link.collection_id)) {
+            return invalid("file_collections contains a duplicate link");
+        }
+    }
+
+    let mut seen_tag_links: HashSet<(i64, i64)> = HashSet::new();
+    for link in &export.file_tags {
+        if !file_ids.contains(&link.file_id) || !tag_ids.contains(&link.tag_id) {
+            return invalid("file_tags contains an unknown file_id or tag_id");
+        }
+        if !seen_tag_links.insert((link.file_id, link.tag_id)) {
+            return invalid("file_tags contains a duplicate link");
+        }
+    }
+
+    let mut seen_note_ids: HashSet<i64> = HashSet::new();
+    for note in &export.file_notes {
+        if note.id <= 0 || !seen_note_ids.insert(note.id) {
+            return invalid("file_notes must have unique positive IDs");
+        }
+        if !file_ids.contains(&note.file_id) {
+            return invalid("file_notes contains an unknown file_id");
+        }
+        if note.note_text.trim().is_empty() {
+            return invalid("file_notes contains an empty note");
+        }
+        if note.created_at.is_empty() || note.updated_at.is_empty() {
+            return invalid("file_notes is missing a timestamp");
+        }
+    }
+
     Ok(())
 }
 
@@ -2136,6 +2225,158 @@ mod tests {
         assert_eq!(persisted[0].note_text, "Note about a missing file");
         delete_file_note_inner(&reopened, first.id).unwrap();
         assert!(list_file_notes_inner(&reopened, file.id).unwrap().is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_export_validation_covers_phase2_integrity_and_summary() {
+        let dir = temp_auth_dir("cmd_export_validation");
+        let (db, db_dir) = test_auth_db("cmd_export_validation");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Validation Root").unwrap();
+        let file = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("doc.pdf").to_str().unwrap().into(),
+                normalized_path: dir.join("doc.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "doc.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 11,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+        let collection = db.create_collection("Validation Col", None, None).unwrap();
+        let tag = db.create_tag("validation-tag", None).unwrap();
+        db.add_file_to_collection(file.id, collection.id).unwrap();
+        db.add_file_to_tag(file.id, tag.id).unwrap();
+        let note = db.create_file_note(file.id, "Own note").unwrap();
+
+        let valid = db.export_library().unwrap();
+        assert!(validate_export(&valid).is_ok());
+
+        let mut bad = valid.clone();
+        bad.summary.total_size_bytes += 1;
+        assert!(validate_export(&bad).unwrap_err().contains("total_size_bytes"));
+
+        let mut bad = valid.clone();
+        bad.summary.export_timestamp = "1999-01-01T00:00:00Z".into();
+        assert!(validate_export(&bad).unwrap_err().contains("export_timestamp"));
+
+        let mut bad = valid.clone();
+        bad.file_tags.push(FileTagLink {
+            file_id: 999_999,
+            tag_id: tag.id,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        });
+        assert!(validate_export(&bad).unwrap_err().contains("file_tags"));
+
+        let mut bad = valid.clone();
+        bad.file_collections.push(FileCollectionLink {
+            file_id: file.id,
+            collection_id: 999_999,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        });
+        assert!(validate_export(&bad).unwrap_err().contains("file_collections"));
+
+        let mut bad = valid.clone();
+        bad.file_notes.push(FileNote {
+            id: note.id,
+            file_id: file.id,
+            note_text: "duplicate id".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        });
+        assert!(validate_export(&bad).unwrap_err().contains("unique positive IDs"));
+
+        let mut bad = valid.clone();
+        bad.file_notes[0].note_text = "   ".into();
+        assert!(validate_export(&bad).unwrap_err().contains("empty note"));
+
+        let mut bad = valid;
+        bad.tags.push(Tag {
+            id: tag.id,
+            name: "duplicated tag".into(),
+            color_nullable: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        });
+        assert!(validate_export(&bad).unwrap_err().contains("unique positive IDs"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_export_writes_metadata_only_json_atomically() {
+        let dir = temp_auth_dir("cmd_export_atomic");
+        let (db, db_dir) = test_auth_db("cmd_export_atomic");
+        let file_path = dir.join("private_document.txt");
+        let document_body = "PRIVATE_DOCUMENT_BODY_MUST_NOT_BE_EXPORTED_7c21";
+        fs::write(&file_path, document_body).unwrap();
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Atomic Root").unwrap();
+        let file = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: file_path.to_str().unwrap().into(),
+                normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "private_document.txt".into(),
+                extension: "txt".into(),
+                size_bytes: document_body.len() as i64,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+        let collection = db.create_collection("Atomic Col", None, None).unwrap();
+        let tag = db.create_tag("atomic-tag", None).unwrap();
+        db.add_file_to_collection(file.id, collection.id).unwrap();
+        db.add_file_to_tag(file.id, tag.id).unwrap();
+        db.create_file_note(file.id, "Private user note").unwrap();
+
+        let export = db.export_library().unwrap();
+        validate_export(&export).unwrap();
+        let json = serde_json::to_string_pretty(&export).unwrap();
+
+        assert!(!json.contains(document_body), "document contents leaked into export");
+        assert!(json.contains("Private user note"));
+        for key in [
+            "format_version",
+            "scan_roots",
+            "files",
+            "collections",
+            "tags",
+            "file_collections",
+            "file_tags",
+            "file_notes",
+        ] {
+            assert!(json.contains(&format!("\"{key}\"")), "missing export key {key}");
+        }
+
+        let target = dir.join("libone-export.json");
+        atomic_write_json(target.to_str().unwrap(), &json).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), json);
+
+        // Rewriting replaces the whole file and leaves no temporary siblings.
+        let updated = format!("{json}\n");
+        atomic_write_json(target.to_str().unwrap(), &updated).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), updated);
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporary export files must be renamed");
+
+        // The original document was never touched by the export.
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), document_body);
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);

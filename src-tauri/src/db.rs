@@ -11,6 +11,13 @@ use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: i64 = 3;
 
+/// Upper bound for tag IDs accepted by a single file query. Keeps the generated
+/// SQL below SQLite's variable limit even for an untrusted request.
+pub const MAX_TAG_FILTERS: usize = 64;
+
+/// Upper bound for the free-text search term.
+pub const MAX_QUERY_CHARS: usize = 200;
+
 #[derive(Clone)]
 pub struct Database {
     db_path: PathBuf,
@@ -264,12 +271,15 @@ impl Database {
         }
 
         if let Some(ref q) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
-            where_clauses
-                .push("(file_name LIKE ? OR absolute_path LIKE ? OR extension LIKE ?)".into());
-            let pattern = format!("%{}%", q.trim());
-            values.push(Box::new(pattern.clone()));
-            values.push(Box::new(pattern.clone()));
-            values.push(Box::new(pattern));
+            let bounded_query: String = q.trim().chars().take(MAX_QUERY_CHARS).collect();
+            if !bounded_query.is_empty() {
+                where_clauses
+                    .push("(file_name LIKE ? OR absolute_path LIKE ? OR extension LIKE ?)".into());
+                let pattern = format!("%{bounded_query}%");
+                values.push(Box::new(pattern.clone()));
+                values.push(Box::new(pattern.clone()));
+                values.push(Box::new(pattern));
+            }
         }
 
         if let Some(col_id) = params.collection_id {
@@ -283,6 +293,7 @@ impl Database {
             let mut unique_tags = tag_ids.clone();
             unique_tags.sort_unstable();
             unique_tags.dedup();
+            unique_tags.truncate(MAX_TAG_FILTERS);
             if !unique_tags.is_empty() {
                 let placeholders = vec!["?"; unique_tags.len()].join(",");
                 where_clauses.push(format!(
@@ -2102,6 +2113,111 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn query_files_combines_all_filters_with_tag_and_and_pagination() {
+        let (d, p) = db();
+        let r = d.add_scan_root(r"C:\Combined", "Combined").unwrap();
+
+        let insert = |name: &str, ext: &str, status: &str| {
+            let path = format!(r"C:\Combined\{name}");
+            d.insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r.id,
+                normalized_path: normalize(&path),
+                absolute_path: path,
+                file_name: name.into(),
+                extension: ext.into(),
+                size_bytes: 10,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: status.into(),
+            })
+            .unwrap()
+        };
+
+        let f1 = insert("report_final.pdf", "pdf", "indexed");
+        let f2 = insert("other.pdf", "pdf", "indexed");
+        let f3 = insert("report_draft.txt", "txt", "indexed");
+
+        let col = d.create_collection("Reports", None, None).unwrap();
+        let tag_reviewed = d.create_tag("reviewed", None).unwrap();
+        let tag_important = d.create_tag("important", None).unwrap();
+
+        d.add_file_to_collection(f1.id, col.id).unwrap();
+        d.add_file_to_collection(f2.id, col.id).unwrap();
+        d.add_file_to_tag(f1.id, tag_reviewed.id).unwrap();
+        d.add_file_to_tag(f1.id, tag_important.id).unwrap();
+        d.add_file_to_tag(f2.id, tag_reviewed.id).unwrap();
+        d.add_file_to_tag(f3.id, tag_reviewed.id).unwrap();
+        d.add_file_to_tag(f3.id, tag_important.id).unwrap();
+
+        // AND semantics: both tags are required.
+        let both_tags = d
+            .query_files(&FileQueryParams {
+                tag_ids: Some(vec![tag_reviewed.id, tag_important.id]),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(both_tags.total, 2);
+        assert_eq!(both_tags.files.len(), 2);
+
+        // Every Phase 1 + Phase 2 filter together, bounded to one result page.
+        let combined = d
+            .query_files(&FileQueryParams {
+                query: Some("report".into()),
+                root_id: Some(r.id),
+                extension: Some("pdf".into()),
+                status: Some("indexed".into()),
+                collection_id: Some(col.id),
+                tag_ids: Some(vec![tag_reviewed.id, tag_important.id]),
+                sort_by: Some("name".into()),
+                sort_order: Some("asc".into()),
+                page: Some(1),
+                page_size: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(combined.total, 1);
+        assert_eq!(combined.files.len(), 1);
+        assert_eq!(combined.files[0].id, f1.id);
+        assert_eq!(combined.total_pages, 1);
+
+        // Pagination stays parameterized and bounded; an oversized page is clamped.
+        let page_two = d
+            .query_files(&FileQueryParams {
+                tag_ids: Some(vec![tag_reviewed.id, tag_important.id]),
+                page: Some(2),
+                page_size: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page_two.files.len(), 1);
+        assert_eq!(page_two.files[0].id, f1.id);
+
+        let oversized = d
+            .query_files(&FileQueryParams {
+                query: Some("x".repeat(MAX_QUERY_CHARS + 500)),
+                page: Some(1),
+                page_size: Some(500),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(oversized.page_size, 200, "page_size must stay bounded");
+        assert_eq!(oversized.total, 0);
+
+        // Repeated tag IDs are deduplicated before reaching SQLite.
+        let deduped = d
+            .query_files(&FileQueryParams {
+                tag_ids: Some(vec![tag_reviewed.id; 100]),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(deduped.total, 3);
+
         std::fs::remove_dir_all(p).unwrap();
     }
 }
