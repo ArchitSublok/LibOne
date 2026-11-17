@@ -510,7 +510,8 @@ export async function queryIndexedFiles(
     result = result.filter((f) => fileIdsInCol.has(f.id));
   }
   if (params.tag_ids && params.tag_ids.length > 0) {
-    for (const tagId of params.tag_ids) {
+    const boundedTagIds = Array.from(new Set(params.tag_ids)).slice(0, 64);
+    for (const tagId of boundedTagIds) {
       const fileIdsWithTag = new Set(
         mockFileTags
           .filter((ft) => ft.tag_id === tagId)
@@ -619,19 +620,25 @@ export async function exportLibraryMetadata(
   }
 
   const totalSize = mockFiles.reduce((acc, f) => acc + f.size_bytes, 0);
+  const exportedAt = new Date().toISOString();
   return {
-    format_version: "1.0.0",
+    format_version: "1.1.0",
     app: "LibOne",
     version: "0.1.0",
-    exported_at: new Date().toISOString(),
+    exported_at: exportedAt,
     summary: {
       total_roots: mockRoots.length,
       total_files: mockFiles.length,
       total_size_bytes: totalSize,
-      export_timestamp: new Date().toISOString(),
+      export_timestamp: exportedAt,
     },
     scan_roots: [...mockRoots],
     files: [...mockFiles],
+    collections: [...mockCollections],
+    tags: [...mockTags],
+    file_collections: [...mockFileCollections],
+    file_tags: [...mockFileTags],
+    file_notes: [...mockNotes],
   };
 }
 

@@ -174,4 +174,9 @@ export interface LibraryExport {
   summary: ExportSummary;
   scan_roots: ScanRoot[];
   files: IndexedFile[];
+  collections: Collection[];
+  tags: Tag[];
+  file_collections: FileCollectionLink[];
+  file_tags: FileTagLink[];
+  file_notes: FileNote[];
 }

@@ -74,6 +74,8 @@ import { TagModal } from "./components/TagModal";
 import { OrganizationPanel } from "./components/OrganizationPanel";
 import { BulkAssignModal } from "./components/BulkAssignModal";
 import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
+import { useDebouncedValue } from "./hooks/useDebouncedValue";
+import { useResetPageOnFilters } from "./hooks/useResetPageOnFilters";
 import "./App.css";
 
 export const App: React.FC = () => {
@@ -93,7 +95,9 @@ export const App: React.FC = () => {
   const [pageSize, setPageSize] = useState(25);
 
   // ── Sorting & filtering state ─────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState("");
+  // The text box is debounced; all explicit filters below apply immediately.
+  const [searchInput, setSearchInput] = useState("");
+  const searchQuery = useDebouncedValue(searchInput, 300);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [extensionFilter, setExtensionFilter] = useState<string>("all");
   const [distinctExtensions, setDistinctExtensions] = useState<string[]>([]);
@@ -199,10 +203,9 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // When filters or sorting change, reset to page 1
-  useEffect(() => {
-    setPage(1);
-  }, [
+  // Pagination resets on any explicit filter/sort change and when the debounced
+  // search query settles. Typing alone does not fire extra queries.
+  const filterKey = JSON.stringify([
     selectedRootId,
     searchQuery,
     statusFilter,
@@ -212,6 +215,7 @@ export const App: React.FC = () => {
     sortBy,
     sortOrder,
   ]);
+  useResetPageOnFilters(filterKey, setPage);
 
   // Query files when page or filters change
   useEffect(() => {
@@ -981,12 +985,20 @@ export const App: React.FC = () => {
               <div className="search-bar-row">
                 <div className="search-input-wrapper">
                   <Search size={16} className="search-icon" />
+                  {searchInput !== searchQuery && (
+                    <RefreshCw
+                      size={13}
+                      className="spin"
+                      style={{ color: "var(--text-muted)", marginRight: 6 }}
+                      aria-label="Search pending"
+                    />
+                  )}
                   <input
                     type="text"
                     className="search-input"
                     placeholder="Search file names, extensions, or paths…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
                   />
                 </div>
               </div>
@@ -1477,7 +1489,7 @@ export const App: React.FC = () => {
                       <button
                         className="btn btn-secondary"
                         onClick={() => {
-                          setSearchQuery("");
+                          setSearchInput("");
                           setStatusFilter("all");
                           setExtensionFilter("all");
                           handleClearOrganizationFilters();
