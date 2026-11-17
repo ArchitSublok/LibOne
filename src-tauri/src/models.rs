@@ -199,6 +199,9 @@ pub struct ExportSummary {
     pub export_timestamp: String,
 }
 
+/// Current portable metadata export format version.
+pub const EXPORT_FORMAT_VERSION: &str = "1.1.0";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryExport {
     pub format_version: String,
@@ -208,4 +211,9 @@ pub struct LibraryExport {
     pub summary: ExportSummary,
     pub scan_roots: Vec<ScanRoot>,
     pub files: Vec<IndexedFile>,
+    pub collections: Vec<Collection>,
+    pub tags: Vec<Tag>,
+    pub file_collections: Vec<FileCollectionLink>,
+    pub file_tags: Vec<FileTagLink>,
+    pub file_notes: Vec<FileNote>,
 }

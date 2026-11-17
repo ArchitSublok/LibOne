@@ -13,7 +13,7 @@ use crate::db::Database;
 use crate::models::{
     AppInfo, Collection, FileCollectionLink, FileDetail, FileNote, FileQueryParams, FileTagLink,
     IndexedFile, LibraryExport, PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats,
-    Tag, WatcherOverallStatus,
+    Tag, WatcherOverallStatus, EXPORT_FORMAT_VERSION,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -1634,6 +1634,11 @@ mod tests {
             },
             scan_roots: vec![],
             files: vec![],
+            collections: vec![],
+            tags: vec![],
+            file_collections: vec![],
+            file_tags: vec![],
+            file_notes: vec![],
         };
         assert!(validate_export(&export).is_ok());
     }
@@ -1653,6 +1658,11 @@ mod tests {
             },
             scan_roots: vec![],
             files: vec![],
+            collections: vec![],
+            tags: vec![],
+            file_collections: vec![],
+            file_tags: vec![],
+            file_notes: vec![],
         };
         let err = validate_export(&export).unwrap_err();
         assert!(err.contains("format_version"));
@@ -1673,6 +1683,11 @@ mod tests {
             },
             scan_roots: vec![],
             files: vec![],
+            collections: vec![],
+            tags: vec![],
+            file_collections: vec![],
+            file_tags: vec![],
+            file_notes: vec![],
         };
         let err = validate_export(&export).unwrap_err();
         assert!(err.contains("total_roots"));
@@ -1705,8 +1720,11 @@ mod tests {
         assert!(summary.get("total_size_bytes").is_some());
         assert!(summary.get("export_timestamp").is_some());
 
-        // format_version should be "1.0.0"
-        assert_eq!(parsed["format_version"].as_str().unwrap(), "1.0.0");
+        // format_version should match the current Phase 2 export format
+        assert_eq!(
+            parsed["format_version"].as_str().unwrap(),
+            EXPORT_FORMAT_VERSION
+        );
 
         let _ = fs::remove_dir_all(&db_dir);
     }
@@ -1770,7 +1788,7 @@ mod tests {
 
         // Deserialize back and verify round-trip
         let deserialized: LibraryExport = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.format_version, "1.0.0");
+        assert_eq!(deserialized.format_version, EXPORT_FORMAT_VERSION);
         assert_eq!(deserialized.app, "LibOne");
         assert_eq!(deserialized.summary.total_roots, 1);
         assert_eq!(deserialized.summary.total_files, 1);

@@ -3,7 +3,7 @@
 use crate::models::{
     Collection, ExportSummary, FileCollectionLink, FileDetail, FileNote, FileQueryParams,
     FileTagLink, IndexedFile, LibraryExport, NewIndexedFile, PaginatedFiles, ScanRoot, ScanStats,
-    Tag,
+    Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -468,12 +468,19 @@ impl Database {
         Ok(())
     }
 
+    /// Snapshot of all library metadata. This never reads document contents.
     pub fn export_library(&self) -> Result<LibraryExport> {
         let roots = self.list_scan_roots()?;
         let files = self.list_files(None, None, None, None, Some(0))?;
+        let collections = self.list_collections()?;
+        let tags = self.list_tags()?;
+        let file_collections = self.list_file_collection_links(None, None)?;
+        let file_tags = self.list_file_tag_links(None, None)?;
+        let file_notes = self.list_all_file_notes()?;
         let exported_at = now();
+
         Ok(LibraryExport {
-            format_version: "1.0.0".into(),
+            format_version: EXPORT_FORMAT_VERSION.into(),
             app: "LibOne".into(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             exported_at: exported_at.clone(),
@@ -485,6 +492,11 @@ impl Database {
             },
             scan_roots: roots,
             files,
+            collections,
+            tags,
+            file_collections,
+            file_tags,
+            file_notes,
         })
     }
 
@@ -936,6 +948,16 @@ impl Database {
             "SELECT id, file_id, note_text, created_at, updated_at FROM file_notes WHERE file_id=?1 ORDER BY created_at DESC, id DESC",
         )?;
         let rows = stmt.query_map(params![file_id], note_from_row)?;
+        rows.collect()
+    }
+
+    /// All private notes in the library, used by the metadata-only exporter.
+    pub fn list_all_file_notes(&self) -> Result<Vec<FileNote>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, file_id, note_text, created_at, updated_at FROM file_notes ORDER BY created_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], note_from_row)?;
         rows.collect()
     }
 
@@ -2012,6 +2034,74 @@ mod tests {
         assert_eq!(p2.files.len(), 1);
         assert_eq!(p2.files[0].id, f3.id);
 
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn export_library_contains_phase2_metadata_and_no_document_contents() {
+        let (d, p) = db();
+        let dir = std::env::temp_dir().join(format!(
+            "libone-export-src-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let file_path = dir.join("export_target.txt");
+        let document_body = "UNIQUE_DOCUMENT_BODY_SHOULD_NOT_APPEAR_IN_EXPORT_9f3a";
+        std::fs::write(&file_path, document_body).unwrap();
+
+        let root = d.add_scan_root(dir.to_str().unwrap(), "Export Root").unwrap();
+        let file = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: file_path.to_str().unwrap().into(),
+                normalized_path: normalize(file_path.to_str().unwrap()),
+                file_name: "export_target.txt".into(),
+                extension: "txt".into(),
+                size_bytes: document_body.len() as i64,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let collection = d.create_collection("Export Collection", None, None).unwrap();
+        let tag = d.create_tag("export-tag", None).unwrap();
+        d.add_file_to_collection(file.id, collection.id).unwrap();
+        d.add_file_to_tag(file.id, tag.id).unwrap();
+        let note = d
+            .create_file_note(file.id, "my own private note")
+            .unwrap();
+
+        let export = d.export_library().unwrap();
+        assert_eq!(export.format_version, EXPORT_FORMAT_VERSION);
+        assert_eq!(export.collections.len(), 1);
+        assert_eq!(export.tags.len(), 1);
+        assert_eq!(export.file_collections.len(), 1);
+        assert_eq!(export.file_collections[0].file_id, file.id);
+        assert_eq!(export.file_collections[0].collection_id, collection.id);
+        assert_eq!(export.file_tags.len(), 1);
+        assert_eq!(export.file_tags[0].tag_id, tag.id);
+        assert_eq!(export.file_notes.len(), 1);
+        assert_eq!(export.file_notes[0].id, note.id);
+        assert_eq!(export.file_notes[0].note_text, "my own private note");
+
+        let json = serde_json::to_string(&export).unwrap();
+        assert!(
+            !json.contains(document_body),
+            "export must never include document contents"
+        );
+        assert!(
+            json.contains("my own private note"),
+            "user-authored notes are metadata and should be exported"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
         std::fs::remove_dir_all(p).unwrap();
     }
 }
