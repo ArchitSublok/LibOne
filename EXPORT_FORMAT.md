@@ -277,3 +277,12 @@ LibOne follows Semantic Versioning (`MAJOR.MINOR.PATCH`) for the metadata format
 - **Standard Tools**: Valid UTF-8 JSON with indentation can be processed by `jq`, Python (`json.load`), PowerShell (`ConvertFrom-Json`), Node.js, and data science notebooks.
 - **Offline Archiving**: Users can archive exports alongside cold-storage backups or audit library metadata without the live SQLite database.
 - **No Proprietary Encodings**: Dates are ISO 8601 UTC strings, byte sizes are 64-bit integers, and boolean flags are literal `true`/`false`.
+
+---
+
+## 6. Integration Review Notes
+
+- The exporter reads only SQLite rows. It never opens an original document to read bytes, and it does not call any text extraction, OCR, or AI component.
+- `file_notes[].note_text` is copied verbatim from user-authored notes. Because notes can contain sensitive user text, treat exported JSON files as private data and store them accordingly.
+- Link timestamps use the `created_at` key (not `added_at`). The `summary` object intentionally keeps only the Phase 1 counters; consumers should derive collection/tag/note counts from the corresponding arrays.
+- Validation is performed in memory before any write. A failed validation leaves any pre-existing target file unchanged because no temporary file is created.

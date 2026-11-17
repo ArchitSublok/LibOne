@@ -406,3 +406,48 @@ Add dedicated test modules or tests in `src-tauri/src/db.rs` and `src-tauri/src/
    - `cargo test --manifest-path src-tauri\Cargo.toml --lib`
    - `cargo fmt --manifest-path src-tauri\Cargo.toml --check`
    - `npm run build`
+
+---
+
+## 10. As-Built Integration Review (Authoritative)
+
+The plan above is the original design. The implemented behavior is documented here and in `ARCHITECTURE.md` �10, `KNOWN_LIMITATIONS.md` �4, and `EXPORT_FORMAT.md`.
+
+### 10.1 Confirmed Behaviors
+
+- **Migration**: v3 migration is additive; a synthetic Phase 1 v2 database migrates with its scan root and indexed file intact (ID, path, hash, NTFS file ID, status preserved).
+- **Scan/watcher safety**: Scanner and watcher only update `indexed_files` rows in place (`touch`, `update`, `move`, `mark missing`, `insert`). They never delete file rows and never modify Phase 2 tables. Links and notes survive move, rename, update, and missing status.
+- **Original file lifecycle**: Renaming/moving/deleting an original file on disk only changes LibOne metadata. Deleting a collection/tag cascades only to its links; the indexed file and its notes remain.
+- **Disabled roots**: All organization mutations are blocked with a descriptive "Scan root ... is disabled" error; reads remain available.
+- **Non-destructive/local**: All collection/tag/note operations are local SQLite writes. No cloud, telemetry, accounts, AI, OCR, or full-text extraction exists. No shell-based launching was added.
+- **SQL boundary**: Production SQL lives only in `src-tauri/src/db.rs`.
+- **UI errors**: Surfaced in banners, dialogs, and sidebars with retry/clear actions; messages are descriptive but may include technical IDs.
+
+### 10.2 Differences From the Original Plan
+
+| Planned | As built |
+|---|---|
+| `collections.description` / `color`, `tags.color` | Columns are `description_nullable` / `color_nullable` to distinguish "unset" from empty. |
+| `file_notes` one row per file | One-to-many: `id` primary key, multiple notes per file, each with its own timestamps. |
+| Link timestamp named `added_at` | Column is `created_at`. |
+| `list_collections` / `list_tags` return counts | They return plain arrays; the frontend uses separate count helpers. |
+| `FileDetail` carries collections/tags/note | `FileDetail` keeps only Phase 1 fields; notes live in a dedicated detail-view section, and organization is managed through the sidebar plus a multi-file selection bar. |
+| Search across note text and tag names | Free-text search remains filename/path/extension only; `has_notes`, `collection_id`, and AND `tag_ids` filters are available. |
+| Export summary counters `total_collections`, `total_tags`, `total_notes` | Not added; consumers derive counts from the arrays. Summary keeps all Phase 1 counters. |
+| Blocked only adds on disabled roots | All organization mutations (add/remove/link/note create/update/delete) are blocked consistently. |
+
+### 10.3 Known Limitations
+
+See `KNOWN_LIMITATIONS.md` �4 for debounce bounds, AND-only tag filtering, single collection filter, no Markdown notes, client-side counts, mock-mode persistence, export privacy, and error-message details.
+
+### 10.4 Verification Performed During This Review
+
+The following commands were run in this workspace after the documentation and disabled-root consistency changes:
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --check` — passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — 53 library tests passed; binary and doc tests contained 0 tests.
+- `npm test` — 5 test files, 17 tests passed.
+- `npx tsc --noEmit` — passed.
+- `npm run build` — passed.
+
+No commit or push was made as part of this review.

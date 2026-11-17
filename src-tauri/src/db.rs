@@ -2049,6 +2049,83 @@ mod tests {
     }
 
     #[test]
+    fn scan_style_updates_preserve_organization_metadata() {
+        let (d, p) = db();
+        let r = d.add_scan_root(r"C:\ScanSafe", "Scan Safe").unwrap();
+        let file = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: r"C:\ScanSafe\report.pdf".into(),
+                normalized_path: normalize(r"C:\ScanSafe\report.pdf"),
+                file_name: "report.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let collection = d.create_collection("Safe Col", None, None).unwrap();
+        let tag = d.create_tag("safe-tag", None).unwrap();
+        d.add_file_to_collection(file.id, collection.id).unwrap();
+        d.add_file_to_tag(file.id, tag.id).unwrap();
+        let note = d.create_file_note(file.id, "Keep this note").unwrap();
+
+        // The operations used by the scanner and watcher only update the file row.
+        d.touch_indexed_file(file.id, "changed").unwrap();
+        d.update_indexed_file(
+            file.id,
+            &NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: r"C:\ScanSafe\report.pdf".into(),
+                normalized_path: normalize(r"C:\ScanSafe\report.pdf"),
+                file_name: "report.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 120,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            },
+        )
+        .unwrap();
+        d.move_indexed_file(
+            file.id,
+            &NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: r"C:\ScanSafe\renamed.pdf".into(),
+                normalized_path: normalize(r"C:\ScanSafe\renamed.pdf"),
+                file_name: "renamed.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 120,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "moved".into(),
+            },
+        )
+        .unwrap();
+        d.mark_file_missing(file.id).unwrap();
+
+        let updated = d.get_indexed_file(file.id).unwrap().unwrap();
+        assert_eq!(updated.file_name, "renamed.pdf");
+        assert_eq!(updated.status, "missing");
+        assert_eq!(d.list_file_collections(file.id).unwrap().len(), 1);
+        assert_eq!(d.list_file_tags(file.id).unwrap().len(), 1);
+        assert_eq!(
+            d.get_file_note(note.id).unwrap().unwrap().note_text,
+            "Keep this note"
+        );
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
     fn export_library_contains_phase2_metadata_and_no_document_contents() {
         let (d, p) = db();
         let dir = std::env::temp_dir().join(format!(
@@ -2064,7 +2141,9 @@ mod tests {
         let document_body = "UNIQUE_DOCUMENT_BODY_SHOULD_NOT_APPEAR_IN_EXPORT_9f3a";
         std::fs::write(&file_path, document_body).unwrap();
 
-        let root = d.add_scan_root(dir.to_str().unwrap(), "Export Root").unwrap();
+        let root = d
+            .add_scan_root(dir.to_str().unwrap(), "Export Root")
+            .unwrap();
         let file = d
             .insert_indexed_file(&NewIndexedFile {
                 scan_root_id: root.id,
@@ -2081,13 +2160,13 @@ mod tests {
             })
             .unwrap();
 
-        let collection = d.create_collection("Export Collection", None, None).unwrap();
+        let collection = d
+            .create_collection("Export Collection", None, None)
+            .unwrap();
         let tag = d.create_tag("export-tag", None).unwrap();
         d.add_file_to_collection(file.id, collection.id).unwrap();
         d.add_file_to_tag(file.id, tag.id).unwrap();
-        let note = d
-            .create_file_note(file.id, "my own private note")
-            .unwrap();
+        let note = d.create_file_note(file.id, "my own private note").unwrap();
 
         let export = d.export_library().unwrap();
         assert_eq!(export.format_version, EXPORT_FORMAT_VERSION);

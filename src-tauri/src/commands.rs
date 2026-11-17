@@ -674,10 +674,7 @@ pub fn open_file_in_default_app(
 /// links, and notes.
 fn validate_export(export: &LibraryExport) -> Result<(), String> {
     fn invalid(message: impl AsRef<str>) -> Result<(), String> {
-        Err(format!(
-            "Export validation failed: {}",
-            message.as_ref()
-        ))
+        Err(format!("Export validation failed: {}", message.as_ref()))
     }
 
     if export.format_version.is_empty() {
@@ -735,14 +732,20 @@ fn validate_export(export: &LibraryExport) -> Result<(), String> {
     }
 
     let collection_ids: HashSet<i64> = export.collections.iter().map(|c| c.id).collect();
-    if export.collections.iter().any(|c| c.id <= 0 || c.name.trim().is_empty())
+    if export
+        .collections
+        .iter()
+        .any(|c| c.id <= 0 || c.name.trim().is_empty())
         || collection_ids.len() != export.collections.len()
     {
         return invalid("collections must have unique positive IDs and non-empty names");
     }
 
     let tag_ids: HashSet<i64> = export.tags.iter().map(|t| t.id).collect();
-    if export.tags.iter().any(|t| t.id <= 0 || t.name.trim().is_empty())
+    if export
+        .tags
+        .iter()
+        .any(|t| t.id <= 0 || t.name.trim().is_empty())
         || tag_ids.len() != export.tags.len()
     {
         return invalid("tags must have unique positive IDs and non-empty names");
@@ -1140,10 +1143,7 @@ pub fn remove_file_from_collection_inner(
     file_id: i64,
     collection_id: i64,
 ) -> Result<(), String> {
-    let _ = db
-        .get_indexed_file(file_id)
-        .map_err(db_err)?
-        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    validate_file_for_organization(db, file_id)?;
     db.remove_file_from_collection(file_id, collection_id)
         .map_err(db_err)
 }
@@ -1274,10 +1274,7 @@ pub fn add_file_to_tag(
 }
 
 pub fn remove_file_from_tag_inner(db: &Database, file_id: i64, tag_id: i64) -> Result<(), String> {
-    let _ = db
-        .get_indexed_file(file_id)
-        .map_err(db_err)?
-        .ok_or_else(|| format!("Indexed file #{file_id} not found in library."))?;
+    validate_file_for_organization(db, file_id)?;
     db.remove_file_from_tag(file_id, tag_id).map_err(db_err)
 }
 
@@ -1407,6 +1404,14 @@ pub fn get_file_note_inner(db: &Database, note_id: i64) -> Result<FileNote, Stri
         .ok_or_else(|| format!("Note #{note_id} not found."))
 }
 
+/// Applies the same disabled-root policy as collection/tag mutations by
+/// resolving the note's indexed file first.
+fn validate_note_for_organization(db: &Database, note_id: i64) -> Result<FileNote, String> {
+    let note = get_file_note_inner(db, note_id)?;
+    validate_file_for_organization(db, note.file_id)?;
+    Ok(note)
+}
+
 #[tauri::command]
 pub fn get_file_note(note_id: i64, state: State<'_, AppState>) -> Result<FileNote, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -1436,10 +1441,7 @@ pub fn update_file_note_inner(
     if trimmed.is_empty() {
         return Err("Note content cannot be empty.".to_string());
     }
-    let _ = db
-        .get_file_note(note_id)
-        .map_err(db_err)?
-        .ok_or_else(|| format!("Note #{note_id} not found."))?;
+    let _ = validate_note_for_organization(db, note_id)?;
     db.update_file_note(note_id, trimmed).map_err(db_err)
 }
 
@@ -1454,10 +1456,7 @@ pub fn update_file_note(
 }
 
 pub fn delete_file_note_inner(db: &Database, note_id: i64) -> Result<(), String> {
-    let _ = db
-        .get_file_note(note_id)
-        .map_err(db_err)?
-        .ok_or_else(|| format!("Note #{note_id} not found."))?;
+    let _ = validate_note_for_organization(db, note_id)?;
     db.delete_file_note(note_id).map_err(db_err)
 }
 
@@ -1955,6 +1954,11 @@ mod tests {
         let col = create_collection_inner(&db, "Test Col", None, None).unwrap();
         let tag = create_tag_inner(&db, "Test Tag", None).unwrap();
 
+        // Seed metadata while the root is enabled.
+        let _ = add_file_to_collection_inner(&db, file.id, col.id).unwrap();
+        let _ = add_file_to_tag_inner(&db, file.id, tag.id).unwrap();
+        let note = create_file_note_inner(&db, file.id, "Note before disable").unwrap();
+
         // Disable root
         db.remove_scan_root(root.id).unwrap();
 
@@ -1970,6 +1974,29 @@ mod tests {
         let res_note = create_file_note_inner(&db, file.id, "Note on disabled");
         assert!(res_note.is_err());
         assert!(res_note.unwrap_err().contains("is disabled"));
+
+        // Removals and edits are blocked too, so all organization mutations
+        // behave the same for a disabled root.
+        let res_unlink = remove_file_from_collection_inner(&db, file.id, col.id);
+        assert!(res_unlink.is_err());
+        assert!(res_unlink.unwrap_err().contains("is disabled"));
+
+        let res_untag = remove_file_from_tag_inner(&db, file.id, tag.id);
+        assert!(res_untag.is_err());
+        assert!(res_untag.unwrap_err().contains("is disabled"));
+
+        let res_edit = update_file_note_inner(&db, note.id, "Edited while disabled");
+        assert!(res_edit.is_err());
+        assert!(res_edit.unwrap_err().contains("is disabled"));
+
+        let res_delete = delete_file_note_inner(&db, note.id);
+        assert!(res_delete.is_err());
+        assert!(res_delete.unwrap_err().contains("is disabled"));
+
+        // Existing metadata remains readable and intact.
+        assert_eq!(list_file_notes_inner(&db, file.id).unwrap().len(), 1);
+        assert_eq!(list_file_collections_inner(&db, file.id).unwrap().len(), 1);
+        assert_eq!(list_file_tags_inner(&db, file.id).unwrap().len(), 1);
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
@@ -2224,7 +2251,9 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].note_text, "Note about a missing file");
         delete_file_note_inner(&reopened, first.id).unwrap();
-        assert!(list_file_notes_inner(&reopened, file.id).unwrap().is_empty());
+        assert!(list_file_notes_inner(&reopened, file.id)
+            .unwrap()
+            .is_empty());
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
@@ -2235,12 +2264,19 @@ mod tests {
         let dir = temp_auth_dir("cmd_export_validation");
         let (db, db_dir) = test_auth_db("cmd_export_validation");
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Validation Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Validation Root")
+            .unwrap();
         let file = db
             .insert_indexed_file(&crate::models::NewIndexedFile {
                 scan_root_id: root.id,
                 absolute_path: dir.join("doc.pdf").to_str().unwrap().into(),
-                normalized_path: dir.join("doc.pdf").to_str().unwrap().replace('/', "\\").to_lowercase(),
+                normalized_path: dir
+                    .join("doc.pdf")
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
                 file_name: "doc.pdf".into(),
                 extension: "pdf".into(),
                 size_bytes: 11,
@@ -2262,11 +2298,15 @@ mod tests {
 
         let mut bad = valid.clone();
         bad.summary.total_size_bytes += 1;
-        assert!(validate_export(&bad).unwrap_err().contains("total_size_bytes"));
+        assert!(validate_export(&bad)
+            .unwrap_err()
+            .contains("total_size_bytes"));
 
         let mut bad = valid.clone();
         bad.summary.export_timestamp = "1999-01-01T00:00:00Z".into();
-        assert!(validate_export(&bad).unwrap_err().contains("export_timestamp"));
+        assert!(validate_export(&bad)
+            .unwrap_err()
+            .contains("export_timestamp"));
 
         let mut bad = valid.clone();
         bad.file_tags.push(FileTagLink {
@@ -2282,7 +2322,9 @@ mod tests {
             collection_id: 999_999,
             created_at: "2026-01-01T00:00:00Z".into(),
         });
-        assert!(validate_export(&bad).unwrap_err().contains("file_collections"));
+        assert!(validate_export(&bad)
+            .unwrap_err()
+            .contains("file_collections"));
 
         let mut bad = valid.clone();
         bad.file_notes.push(FileNote {
@@ -2292,7 +2334,9 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         });
-        assert!(validate_export(&bad).unwrap_err().contains("unique positive IDs"));
+        assert!(validate_export(&bad)
+            .unwrap_err()
+            .contains("unique positive IDs"));
 
         let mut bad = valid.clone();
         bad.file_notes[0].note_text = "   ".into();
@@ -2305,7 +2349,9 @@ mod tests {
             color_nullable: None,
             created_at: "2026-01-01T00:00:00Z".into(),
         });
-        assert!(validate_export(&bad).unwrap_err().contains("unique positive IDs"));
+        assert!(validate_export(&bad)
+            .unwrap_err()
+            .contains("unique positive IDs"));
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
@@ -2319,12 +2365,18 @@ mod tests {
         let document_body = "PRIVATE_DOCUMENT_BODY_MUST_NOT_BE_EXPORTED_7c21";
         fs::write(&file_path, document_body).unwrap();
 
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Atomic Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Atomic Root")
+            .unwrap();
         let file = db
             .insert_indexed_file(&crate::models::NewIndexedFile {
                 scan_root_id: root.id,
                 absolute_path: file_path.to_str().unwrap().into(),
-                normalized_path: file_path.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                normalized_path: file_path
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
                 file_name: "private_document.txt".into(),
                 extension: "txt".into(),
                 size_bytes: document_body.len() as i64,
@@ -2345,7 +2397,10 @@ mod tests {
         validate_export(&export).unwrap();
         let json = serde_json::to_string_pretty(&export).unwrap();
 
-        assert!(!json.contains(document_body), "document contents leaked into export");
+        assert!(
+            !json.contains(document_body),
+            "document contents leaked into export"
+        );
         assert!(json.contains("Private user note"));
         for key in [
             "format_version",
@@ -2357,7 +2412,10 @@ mod tests {
             "file_tags",
             "file_notes",
         ] {
-            assert!(json.contains(&format!("\"{key}\"")), "missing export key {key}");
+            assert!(
+                json.contains(&format!("\"{key}\"")),
+                "missing export key {key}"
+            );
         }
 
         let target = dir.join("libone-export.json");
@@ -2373,7 +2431,10 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temporary export files must be renamed");
+        assert!(
+            leftovers.is_empty(),
+            "temporary export files must be renamed"
+        );
 
         // The original document was never touched by the export.
         assert_eq!(fs::read_to_string(&file_path).unwrap(), document_body);

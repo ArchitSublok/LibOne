@@ -54,3 +54,45 @@ This document transparently records the architectural constraints, platform-spec
 
 ### 3.4 Symlinks and Directory Junctions
 - Symbolic links and directory junctions are explicitly excluded from traversal and watching to prevent infinite directory recursion, duplicate indexing, and boundary escapes.
+
+---
+
+## 4. Phase 2 Integration Limitations
+
+### 4.1 Search Scope
+
+- Free-text search still matches **file name, absolute path, and extension only**. It does not search note text, tag names, or collection names.
+- Tag filtering is AND-only: selecting tags `A` and `B` returns files that have **both**. There is no OR mode.
+- Only one collection can be selected at a time.
+- Bounds are intentional: free-text queries are truncated to 200 characters, tag IDs are deduplicated and capped at 64, and page size is clamped to 1..200. Requests beyond these limits are silently reduced rather than rejected.
+- The debounce is 300 ms. A filter change made while the search box is still debouncing applies immediately; the final file list combines both once the search settles.
+
+### 4.2 Notes and Organization UI
+
+- Notes are plain user-authored text. The UI does not render Markdown, attachments, or rich text, and it does not auto-populate notes from document contents.
+- The file table does not display inline tag pills or a note indicator; organization state is managed from the sidebar and the file detail dialog.
+- File counts in the sidebar are computed by querying the library per collection/tag. They refresh after mutations but are not maintained as materialized counters.
+- Browser dev-preview mode uses in-memory mock data. Mock notes/links reset when the page reloads; only the Tauri/SQLite path is persistent.
+
+### 4.3 Disabled Roots and Missing Files
+
+- Disabling a scan root keeps its indexed files, collections, tags, links, and notes. It does not detach or delete metadata.
+- While a root is disabled, all organization **mutations** are blocked (add/remove links, create/update/delete notes). Reads remain available so historical metadata can be inspected.
+- If an original file is missing but its root is enabled, existing notes remain editable and new notes can still be added; this is metadata-only and never touches the file path.
+
+### 4.4 Export
+
+- Exports include user-authored note text. Treat exported JSON files as private data.
+- `summary` keeps only the Phase 1 counters (`total_roots`, `total_files`, `total_size_bytes`); counts for collections/tags/notes must be derived from their arrays.
+- Validation checks structure and referential integrity, but does not require `format_version` to equal the current version. Older `1.x` exports remain readable by design.
+- Atomic write/rename uses a temporary file in the target directory, so the final target must be on the same filesystem.
+
+### 4.5 Error Messages
+
+- Errors are shown in context (toolbar banners, sidebar retry, dialogs) and are human-readable, but some include raw technical identifiers such as `Note #42 not found.` or `Indexed file #7 not found in library.`. There is no localization layer or stable error-code catalog.
+
+### 4.6 Scope Boundaries (Unchanged)
+
+- LibOne does not perform cloud sync, telemetry, account sign-in, AI classification, OCR, or full-text extraction in Phase 2.
+- No shell-based file launching was introduced. Windows file opening uses direct `ShellExecuteW`; Explorer reveal uses a direct `explorer.exe` process with arguments.
+- All production SQL remains in the repository layer (`db.rs`). The frontend and command layer never construct SQL.

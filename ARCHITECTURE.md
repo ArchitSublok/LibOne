@@ -67,6 +67,7 @@ LibOne never stores your documents in an opaque vault or uploads them to any ser
   - `scan_roots`: user-selected absolute and normalized paths, display name, enabled state, creation time, and scan lifecycle timestamps/status.
   - `indexed_files`: metadata only—absolute/normalized path, file name/type, size, available filesystem dates, discovery/last-seen dates, optional hash, and lifecycle status. Original file contents are never copied into SQLite.
   - `library_metadata`: one local-library record containing schema and creation information.
+  - Phase 2 (`schema_version = 3`, additive migration): `collections` (`id`, `name`, `description_nullable`, `color_nullable`, `created_at`, `updated_at`), `tags` (`id`, `name`, `color_nullable`, `created_at`), `file_collections` (`file_id`, `collection_id`, `created_at`), `file_tags` (`file_id`, `tag_id`, `created_at`), `file_notes` (`id`, `file_id`, `note_text`, `created_at`, `updated_at`). Notes are one-to-many per file; all link tables use `ON DELETE CASCADE` only when the metadata record itself is deleted.
 
 ---
 
@@ -181,7 +182,8 @@ To track files across renames and moves within a scan root without reading file 
 The SQLite repository layer provides `query_files` with parameterized SQL:
 - **Pagination**: Returns fixed-size chunks using SQL `LIMIT ? OFFSET ?`, accompanied by total count calculations (`COUNT(*)`) and total page computation.
 - **Sorting**: Validates sort keys against a strict whitelist (`name`, `path`, `extension`, `size`, `modified`, `status`) to prevent SQL injection, appending direction (`ASC` / `DESC`).
-- **Filtering**: Combines scan root restrictions (`scan_root_id`), format restrictions (`extension`), lifecycle status filters (`status`), and multi-field substring queries (`file_name`, `absolute_path`, `extension`).
+- **Filtering**: Combines scan root restrictions (`scan_root_id`), format restrictions (`extension`), lifecycle status filters (`status`), and multi-field substring queries (`file_name`, `absolute_path`, `extension`). Phase 2 adds `collection_id`, `tag_ids` (AND match via grouped `file_tags` subquery), and `has_notes`.
+- **Bounds**: Page size is clamped to 1..200. The text query is truncated to 200 characters and tag IDs are deduplicated then capped at 64 before SQL generation. All user values are bound parameters; only whitelisted column names and generated `?` placeholders enter the SQL string.
 - **Format Discovery**: `get_distinct_extensions` queries distinct non-empty file extensions to populate UI filter dropdowns dynamically.
 
 ### 7.2 Path Authorization Pipeline
@@ -195,7 +197,7 @@ Before opening or revealing any original document on disk, LibOne runs `validate
 ### 7.3 Non-Shell Execution Guarantee
 To guarantee safety and prevent command injection or execution of malicious batch scripts:
 - **Default Application Launching**: On Windows, LibOne calls native Win32 `ShellExecuteW(NULL, L"open", wide_path, NULL, NULL, SW_SHOWNORMAL)` from `shell32.dll`. This directly resolves the registered default application without invoking `cmd.exe`, PowerShell, or any shell wrapper.
-- **Show in File Explorer**: Uses direct process creation via `explorer.exe /select,"<file_path>"`. If the file is missing, LibOne attempts to reveal the containing folder while notifying the user.
+- **Show in File Explorer**: Uses direct process creation via `explorer.exe` with `/select,<path>` passed as a single argument. It validates that the record is indexed and its root is enabled, then uses the stored path (it does not recompute the root boundary). If the file is missing, LibOne attempts to reveal the containing folder while notifying the user. No `cmd.exe`/PowerShell shell is used.
 
 ### 7.4 Document Privacy
 - LibOne displays and queries filesystem metadata only (paths, sizes, dates, hashes, status).
@@ -250,15 +252,16 @@ When coalescing completes, LibOne determines the safest refresh strategy:
 ## 9. Portable Metadata Export Architecture
 
 ### 9.1 Self-Contained Versioned Snapshot
-- **Format Version `1.0.0`**: Exports carry a dedicated `format_version` attribute conforming to semantic versioning guidelines documented in `EXPORT_FORMAT.md`.
-- **Complete Library Metadata**: Includes top-level application metadata, aggregate summaries (`total_roots`, `total_files`, `total_size_bytes`), complete scan root definitions, and all indexed document file entries with their statuses, timestamps, sizes, NTFS identities, and computed hashes.
-- **Strictly No Document Content**: Under no circumstances does the export engine read or embed file payload bytes. The original documents remain completely untouched on disk.
+- **Format Version `1.1.0`**: Exports carry a dedicated `format_version` attribute conforming to semantic versioning guidelines documented in `EXPORT_FORMAT.md`.
+- **Complete Library Metadata**: Includes top-level application metadata, aggregate summaries (`total_roots`, `total_files`, `total_size_bytes`), complete scan root definitions, and all indexed document file entries with their statuses, timestamps, sizes, NTFS identities, and computed hashes. Phase 2 adds `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`.
+- **Strictly No Document Content**: Under no circumstances does the export engine read or embed file payload bytes. `file_notes[].note_text` is user-authored only; no extracted text, OCR output, or AI-generated content is ever stored or exported. The original documents remain completely untouched on disk.
 
 ### 9.2 Validation Pipeline
 Before serializing or persisting any export to disk, the backend runs `validate_export`:
 1. **Header Checks**: Asserts that `format_version`, `app`, `version`, and `exported_at` are present and non-empty.
-2. **Integrity Validation**: Verifies that `summary.total_roots == scan_roots.len()` and `summary.total_files == files.len()`.
-3. If any assertion fails, the operation aborts before performing filesystem writes, returning a clear error to the UI.
+2. **Integrity Validation**: Verifies `summary.total_roots == scan_roots.len()`, `summary.total_files == files.len()`, `summary.total_size_bytes == sum(files.size_bytes)`, and `summary.export_timestamp == exported_at`.
+3. **Referential Validation**: Collections and tags have unique positive IDs and non-empty names; every link references an existing file and collection/tag; link pairs and note IDs are unique; notes have non-empty text and both timestamps.
+4. If any assertion fails, the operation aborts before performing filesystem writes, returning a descriptive error to the UI.
 
 ### 9.3 Atomic Safe-Write Guarantee
 Writing metadata snapshots can fail if the user disconnects a drive, runs out of disk space, or encounters a power disruption. To prevent partial or corrupt JSON files:
@@ -275,3 +278,70 @@ Writing metadata snapshots can fail if the user disconnects a drive, runs out of
 - No cloud backups, background synchronization, or automatic external transmissions are implemented. Users retain complete local custody over all data.
 
 
+
+---
+
+## 10. Phase 2 As-Built Integration Review
+
+This section describes the behavior that is actually implemented, which takes precedence over the earlier planning text in `PHASE_2_PLAN.md`.
+
+### 10.1 Migration and Existing Data
+
+- `schema_version` is `3`. The v3 migration is additive and runs inside the repository's transaction.
+- The migration adds the five Phase 2 tables and indexes with `IF NOT EXISTS`; no Phase 1 table or column is dropped or renamed.
+- A Phase 1 (v2) database with existing scan roots and indexed files is migrated in place. Root records, file IDs, paths, hashes, NTFS file IDs, statuses, and timestamps are preserved.
+- Existing files can immediately be linked to collections/tags and given notes without reindexing.
+
+### 10.2 Scanning and Watcher Updates
+
+- The scanner and watcher call only `touch_indexed_file`, `update_indexed_file`, `move_indexed_file`, `mark_file_missing`, and `insert_indexed_file` on file records.
+- They never issue `DELETE FROM indexed_files` and never touch `collections`, `tags`, `file_collections`, `file_tags`, or `file_notes`.
+- Moves/renames update the existing row by `id`; because all Phase 2 links and notes reference that `id`, organization metadata follows the file record.
+- A file that disappears from disk is marked `missing`; its links and notes remain readable.
+- A disabled scan root keeps its indexed files and all organization metadata. It does not delete or detach anything.
+
+### 10.3 Original File Lifecycle
+
+- Deleting, renaming, or moving an original file on disk changes only LibOne metadata (`status`, path, timestamps). No original file is modified by any Phase 2 operation.
+- Deleting a collection or tag removes only that metadata row and its links (`ON DELETE CASCADE` applies to links, not to files). The indexed file and its other links/notes remain.
+- Deleting a note removes only that note row.
+- All collection/tag/note commands are local SQLite operations. There is no remote call of any kind.
+
+### 10.4 Disabled Scan Roots
+
+For consistency, every **mutation** of organization metadata is blocked when the containing scan root is disabled:
+
+- `add_file_to_collection`, `remove_file_from_collection`
+- `add_file_to_tag`, `remove_file_from_tag`
+- `create_file_note`, `update_file_note`, `delete_file_note`
+
+These commands return a descriptive error such as `Action denied: Scan root 'X' containing file #N is disabled.` Reading existing metadata (`list_file_notes`, `list_file_collections`, `list_file_tags`, `list_collections`, `list_tags`) is still allowed, so historical data remains inspectable.
+
+### 10.5 Search and Filtering
+
+- Phase 1 filters (filename/path substring, scan root, status, extension) and pagination/sorting are preserved.
+- A single collection filter and a multi-tag AND filter are applied in SQLite with bound parameters. Tag IDs are deduplicated and capped at 64; the free-text term is capped at 200 characters; page size is clamped to 1..200.
+- The text box is debounced in the UI (300 ms). Explicit filter changes are not debounced. Pagination resets to page 1 whenever any filter or sort option changes.
+
+### 10.6 Export
+
+- Export format is `1.1.0`: all Phase 1 fields plus `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`.
+- The export model is validated before serialization, then written to a sibling `.tmp` file and atomically renamed.
+- Exported notes are user-authored text only. No document bytes, extracted text, OCR output, or AI output is read or written.
+
+### 10.7 Security and Scope Boundaries
+
+- No cloud calls, telemetry, analytics, accounts, OAuth, AI services, OCR, or full-text extraction were introduced. The frontend uses only Tauri IPC and native dialogs; there is no `fetch`, `XMLHttpRequest`, or WebSocket usage in application code.
+- `@tauri-apps/plugin-opener` is initialized but is not used to open URLs or external links.
+- No shell-based launching was reintroduced. Windows opening uses direct `ShellExecuteW`; Explorer reveal uses `explorer.exe` with direct arguments. Neither uses `cmd.exe`/PowerShell interpolation.
+- All production SQL is confined to `src-tauri/src/db.rs` (the repository layer). `commands.rs`, `scanner.rs`, `watcher.rs`, and `validate.rs` contain no SQL statements. Raw SQL in `db.rs` tests is fixture setup only.
+- Tracked files contain no secrets, `.env` files, local SQLite databases, `node_modules`, `dist`, Rust `target`, Tauri `gen`, `.npm-cache`, or SDK downloads. `package-lock.json` and `Cargo.lock` are intentionally tracked for reproducible builds.
+
+### 10.8 UI Error Handling
+
+Errors from the backend are surfaced in the relevant surface rather than silently swallowed:
+
+- Load failures appear in the sidebar/file table with retry or clear actions.
+- CRUD dialogs show inline error text and keep user input so a failed save can be retried.
+- Delete and bulk-assignment dialogs explain that only LibOne metadata changes.
+- Messages are human-readable but can include technical identifiers (for example `Note #42 not found.` or `Indexed file #7 not found in library.`). See `KNOWN_LIMITATIONS.md`.

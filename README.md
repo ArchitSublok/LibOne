@@ -38,9 +38,10 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
    - Actionable empty states with instant filter clearance and scan triggers.
 
 5. **Path Authorization & Non-Shell Launching**
-   - Strict security pipeline validates every open/reveal request against indexed SQLite records, active scan root boundaries, and on-disk file existence.
+   - Opening an original validates the indexed record, the enabled scan root, the stored path boundary, and on-disk existence before launching.
+   - Revealing in Explorer validates the indexed record, the enabled scan root, and on-disk existence; the path comes from the indexed record rather than from untrusted UI input.
    - Non-shell execution: launches files via direct Win32 `ShellExecuteW` from `shell32.dll` (no `cmd.exe` or PowerShell command interpolation).
-   - Windows File Explorer integration: reveals original files via direct process invocation (`explorer.exe /select,"<path>"`).
+   - Windows File Explorer integration: reveals original files via direct `explorer.exe` process invocation with an argument array (`/select,<path>`), never through a command shell.
 
 6. **Background File-System Watcher & Coalescing**
    - Real-time directory monitoring powered by Windows `ReadDirectoryChangesW` (`notify` crate).
@@ -48,8 +49,8 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
    - Targeted incremental refreshes for <= 50 file batches; automatic rescan fallback for directory operations or buffer overflows.
    - Non-intrusive live status indicator pill in the UI header with diagnostics popover.
 
-7. **Portable Metadata Export (Format v1.0.0)**
-   - Complete library snapshot exported to structured, self-contained JSON conforming to [`EXPORT_FORMAT.md`](EXPORT_FORMAT.md).
+7. **Portable Metadata Export (Format v1.1.0)**
+   - Complete library snapshot exported to structured, self-contained JSON conforming to [`EXPORT_FORMAT.md`](EXPORT_FORMAT.md). Includes the Phase 2 collections, tags, file links, and user-authored notes arrays.
    - In-memory pre-write validation asserts schema integrity and summary counts before any disk operations.
    - Atomic safe-write: writes to a hidden sibling temporary file (`.libone-export-<nanos>.tmp`) before executing an atomic rename, preventing partial or corrupt files.
    - Native Windows save-file dialog and JSON preview modal with one-click clipboard copying.
@@ -88,26 +89,31 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
    npm run build
    ```
 
-4. **Run Rust unit and integration tests**:
+4. **Run frontend tests**:
+   ```powershell
+   npm test
+   ```
+
+5. **Run Rust unit and integration tests**:
    ```powershell
    cd src-tauri
    cargo test
    cd ..
    ```
 
-5. **Verify Rust code formatting**:
+6. **Verify Rust code formatting**:
    ```powershell
    cd src-tauri
    cargo fmt --check
    cd ..
    ```
 
-6. **Launch the desktop app in development mode**:
+7. **Launch the desktop app in development mode**:
    ```powershell
    npm run tauri dev
    ```
 
-7. **Compile production release binary**:
+8. **Compile production release binary**:
    ```powershell
    cd src-tauri
    cargo build --release
@@ -120,7 +126,8 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
 
 ## Documentation Index
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Comprehensive technical architecture, database schemas, scanner pipeline, watcher lifecycle, and security model.
-- [EXPORT_FORMAT.md](EXPORT_FORMAT.md) — JSON schema definition, example payload, and semantic compatibility rules for metadata exports.
-- [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) — Platform-specific edge cases, NTFS file ID limitations, network drive behavior, and editor save patterns.
-- [PHASE_1_MANUAL_TEST_PLAN.md](PHASE_1_MANUAL_TEST_PLAN.md) — 10 reproducible manual test cases, expected outcomes, and sign-off recording sheet for Phase 1 verification.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Technical architecture, database schemas, scanner/watcher lifecycle, Phase 2 as-built behavior, and security model.
+- [EXPORT_FORMAT.md](EXPORT_FORMAT.md) — JSON schema definition, example payload, and semantic compatibility rules for metadata exports (v1.1.0).
+- [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) — Platform edge cases, Phase 1/Phase 2 boundaries, and known limitations.
+- [PHASE_1_MANUAL_TEST_PLAN.md](PHASE_1_MANUAL_TEST_PLAN.md) — 10 reproducible Phase 1 manual test cases.
+- [PHASE_2_PLAN.md](PHASE_2_PLAN.md) — Original Phase 2 plan plus the as-built integration review and differences.
