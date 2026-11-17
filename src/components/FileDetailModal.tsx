@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   X,
   ExternalLink,
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { FileDetail } from "../types";
 import { computeFileHash, openOriginalFile, showInFileExplorer } from "../services/api";
+import { FileNotesSection } from "./FileNotesSection";
 
 interface Props {
   detail: FileDetail | null;
@@ -33,10 +34,31 @@ export const FileDetailModal: React.FC<Props> = ({
   const [currentHash, setCurrentHash] = useState<string | null>(
     detail?.file.content_hash_nullable ?? null
   );
+  const [notesDirty, setNotesDirty] = useState(false);
+
+  // Never keep the "unsaved notes" flag set after the modal closes or the
+  // displayed file changes.
+  useEffect(() => {
+    if (!isOpen) setNotesDirty(false);
+  }, [isOpen]);
+
+  useEffect(() => {
+    setNotesDirty(false);
+  }, [detail?.file.id]);
 
   if (!isOpen || !detail) return null;
 
   const { file, root_display_name, root_absolute_path, exists_on_disk } = detail;
+
+  const requestClose = () => {
+    if (
+      notesDirty &&
+      !window.confirm("You have unsaved note changes. Discard them?")
+    ) {
+      return;
+    }
+    onClose();
+  };
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 B";
@@ -112,7 +134,7 @@ export const FileDetailModal: React.FC<Props> = ({
   const isMissing = !exists_on_disk || file.status === "missing";
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={requestClose}>
       <div
         className="modal-card"
         style={{ maxWidth: 640 }}
@@ -133,7 +155,7 @@ export const FileDetailModal: React.FC<Props> = ({
               </div>
             </div>
           </div>
-          <button className="icon-button" onClick={onClose} title="Close">
+          <button className="icon-button" onClick={requestClose} title="Close">
             <X size={18} />
           </button>
         </div>
@@ -349,16 +371,23 @@ export const FileDetailModal: React.FC<Props> = ({
             )}
           </div>
 
+          {/* Private notes (stored only in LibOne's local SQLite database) */}
+          <FileNotesSection
+            fileId={file.id}
+            isMissing={isMissing}
+            onDirtyChange={setNotesDirty}
+          />
+
           {/* Privacy Note */}
           <div style={{ marginTop: 14, fontSize: "0.73rem", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
             <ShieldCheck size={13} color="#10b981" />
-            <span>Document contents are never read into memory or stored in SQLite. Only local filesystem metadata is displayed.</span>
+            <span>Document contents are never read into memory or stored in SQLite. Only local filesystem metadata and your own private notes are stored.</span>
           </div>
         </div>
 
         {/* Modal Footer Actions */}
         <div className="modal-footer" style={{ display: "flex", justifyContent: "space-between", padding: "14px 20px" }}>
-          <button className="btn btn-secondary" onClick={onClose}>
+          <button className="btn btn-secondary" onClick={requestClose}>
             Close
           </button>
           <div style={{ display: "flex", gap: 8 }}>
