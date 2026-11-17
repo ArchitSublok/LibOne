@@ -32,6 +32,8 @@ interface Props {
   onScanComplete: (stats: ScanStats) => void;
   onScanningChange: (scanning: boolean) => void;
   onOpenScanScreen?: (rootId: number) => void;
+  /** Phase 2 organization sections (Collections / Tags) rendered below roots. */
+  organizationSections?: React.ReactNode;
 }
 
 type LoadState = "idle" | "loading" | "error";
@@ -117,6 +119,7 @@ export function ScanRootsPanel({
   onScanComplete,
   onScanningChange,
   onOpenScanScreen,
+  organizationSections,
 }: Props) {
   const [addState, setAddState] = useState<LoadState>("idle");
   const [addError, setAddError] = useState<string | null>(null);
@@ -401,6 +404,9 @@ export function ScanRootsPanel({
             <div className="skeleton-line skeleton-line--narrow" />
           </div>
         )}
+
+        {/* Phase 2 organization sections (Collections / Tags) */}
+        {organizationSections}
       </div>
 
       {/* Footer: local data location */}

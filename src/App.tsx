@@ -23,28 +23,45 @@ import {
   ArrowDown,
   Activity,
   Settings,
+  FolderPlus,
+  FolderMinus,
+  Tag as TagIcon,
+  Tags,
+  SquareCheck,
 } from "lucide-react";
 import {
   AppInfo,
+  Collection,
   FileDetail,
   IndexedFile,
   LibraryExport,
   PaginatedFiles,
   ScanRoot,
+  Tag,
   WatcherOverallStatus,
 } from "./types";
 import {
+  addFilesToCollection,
+  addFilesToTag,
+  deleteCollection,
+  deleteTag,
   exportLibraryMetadata,
   getAppInfo,
+  getCollectionCounts,
   getIndexedFileDetail,
   getLibraryExtensions,
+  getTagCounts,
   getWatcherStatus,
   listenLibraryUpdated,
   listenWatcherStatus,
+  listCollections,
   listScanRoots,
+  listTags,
   openOriginalFile,
   promptSaveExportPath,
   queryIndexedFiles,
+  removeFilesFromCollection,
+  removeFilesFromTag,
   scanAllRoots,
   showInFileExplorer,
 } from "./services/api";
@@ -52,6 +69,11 @@ import { ScanRootsPanel } from "./components/ScanRootsPanel";
 import { ScanScreen } from "./components/ScanScreen";
 import { FileDetailModal } from "./components/FileDetailModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { CollectionModal } from "./components/CollectionModal";
+import { TagModal } from "./components/TagModal";
+import { OrganizationPanel } from "./components/OrganizationPanel";
+import { BulkAssignModal } from "./components/BulkAssignModal";
+import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
 import "./App.css";
 
 export const App: React.FC = () => {
@@ -79,6 +101,36 @@ export const App: React.FC = () => {
     "name" | "path" | "extension" | "size" | "modified" | "status"
   >("name");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+
+  // ── Phase 2 organization state (collections & tags) ───────────────────────
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [collectionCounts, setCollectionCounts] = useState<Record<number, number>>({});
+  const [tagCounts, setTagCounts] = useState<Record<number, number>>({});
+  const [organizationLoading, setOrganizationLoading] = useState(true);
+  const [organizationError, setOrganizationError] = useState<string | null>(null);
+
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
+
+  const [collectionModalOpen, setCollectionModalOpen] = useState(false);
+  const [editingCollection, setEditingCollection] = useState<Collection | null>(null);
+  const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [editingTag, setEditingTag] = useState<Tag | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    kind: "collection" | "tag";
+    id: number;
+    name: string;
+  } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // ── Multi-select & bulk organization state ────────────────────────────────
+  const [selectedFileIds, setSelectedFileIds] = useState<number[]>([]);
+  const [bulkAction, setBulkAction] = useState<{
+    kind: "collection" | "tag";
+    action: "add" | "remove";
+  } | null>(null);
 
   // ── Detail view & scanner states ──────────────────────────────────────────
   const [selectedDetail, setSelectedDetail] = useState<FileDetail | null>(null);
@@ -116,6 +168,7 @@ export const App: React.FC = () => {
       .catch((e) => console.error("Failed to load app info", e));
     loadRoots();
     loadExtensions();
+    loadOrganization();
 
     // Initial watcher status
     getWatcherStatus()
@@ -149,7 +202,16 @@ export const App: React.FC = () => {
   // When filters or sorting change, reset to page 1
   useEffect(() => {
     setPage(1);
-  }, [selectedRootId, searchQuery, statusFilter, extensionFilter, sortBy, sortOrder]);
+  }, [
+    selectedRootId,
+    searchQuery,
+    statusFilter,
+    extensionFilter,
+    selectedCollectionId,
+    selectedTagIds,
+    sortBy,
+    sortOrder,
+  ]);
 
   // Query files when page or filters change
   useEffect(() => {
@@ -161,6 +223,24 @@ export const App: React.FC = () => {
     searchQuery,
     statusFilter,
     extensionFilter,
+    selectedCollectionId,
+    selectedTagIds,
+    sortBy,
+    sortOrder,
+  ]);
+
+  // A selection only applies to the currently visible page/filter set.
+  useEffect(() => {
+    setSelectedFileIds([]);
+  }, [
+    page,
+    pageSize,
+    selectedRootId,
+    searchQuery,
+    statusFilter,
+    extensionFilter,
+    selectedCollectionId,
+    selectedTagIds,
     sortBy,
     sortOrder,
   ]);
@@ -190,6 +270,30 @@ export const App: React.FC = () => {
     }
   };
 
+  const loadOrganization = async () => {
+    setOrganizationLoading(true);
+    setOrganizationError(null);
+    try {
+      const [collectionList, tagList] = await Promise.all([
+        listCollections(),
+        listTags(),
+      ]);
+      setCollections(collectionList);
+      setTags(tagList);
+
+      const [collectionCountMap, tagCountMap] = await Promise.all([
+        getCollectionCounts(collectionList),
+        getTagCounts(tagList),
+      ]);
+      setCollectionCounts(collectionCountMap);
+      setTagCounts(tagCountMap);
+    } catch (e: any) {
+      setOrganizationError(e?.message ?? String(e));
+    } finally {
+      setOrganizationLoading(false);
+    }
+  };
+
   const loadFiles = async () => {
     setFilesLoading(true);
     try {
@@ -198,6 +302,8 @@ export const App: React.FC = () => {
         root_id: selectedRootId,
         extension: extensionFilter !== "all" ? extensionFilter : null,
         status: statusFilter !== "all" ? statusFilter : null,
+        collection_id: selectedCollectionId,
+        tag_ids: selectedTagIds.length > 0 ? selectedTagIds : null,
         sort_by: sortBy,
         sort_order: sortOrder,
         page,
@@ -276,6 +382,197 @@ export const App: React.FC = () => {
     } catch (err: any) {
       setActionAlert({ type: "error", message: err?.message || String(err) });
     }
+  };
+
+  // ── Collection & tag filter handlers ──────────────────────────────────────
+
+  const handleSelectCollection = (id: number | null) => {
+    setSelectedCollectionId(id);
+  };
+
+  const handleToggleTag = (tagId: number) => {
+    setSelectedTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]
+    );
+  };
+
+  const handleClearOrganizationFilters = () => {
+    setSelectedCollectionId(null);
+    setSelectedTagIds([]);
+  };
+
+  // ── Collection management ─────────────────────────────────────────────────
+
+  const openCreateCollection = () => {
+    setEditingCollection(null);
+    setCollectionModalOpen(true);
+  };
+
+  const openEditCollection = (collection: Collection) => {
+    setEditingCollection(collection);
+    setCollectionModalOpen(true);
+  };
+
+  const closeCollectionModal = () => {
+    setCollectionModalOpen(false);
+    setEditingCollection(null);
+  };
+
+  const handleCollectionSaved = async (saved: Collection) => {
+    const wasEditing = editingCollection !== null;
+    await loadOrganization();
+    setActionAlert({
+      type: "success",
+      message: wasEditing
+        ? `Collection "${saved.name}" was updated in LibOne. Original files were not modified.`
+        : `Collection "${saved.name}" was created in LibOne. Original files were not modified.`,
+    });
+  };
+
+  // ── Tag management ────────────────────────────────────────────────────────
+
+  const openCreateTag = () => {
+    setEditingTag(null);
+    setTagModalOpen(true);
+  };
+
+  const openEditTag = (tag: Tag) => {
+    setEditingTag(tag);
+    setTagModalOpen(true);
+  };
+
+  const closeTagModal = () => {
+    setTagModalOpen(false);
+    setEditingTag(null);
+  };
+
+  const handleTagSaved = async (saved: Tag) => {
+    const wasEditing = editingTag !== null;
+    await loadOrganization();
+    setActionAlert({
+      type: "success",
+      message: wasEditing
+        ? `Tag "${saved.name}" was updated in LibOne. Original files were not modified.`
+        : `Tag "${saved.name}" was created in LibOne. Original files were not modified.`,
+    });
+  };
+
+  // ── Delete collection / tag (metadata only) ───────────────────────────────
+
+  const requestDeleteCollection = (collection: Collection) => {
+    setDeleteError(null);
+    setPendingDelete({
+      kind: "collection",
+      id: collection.id,
+      name: collection.name,
+    });
+  };
+
+  const requestDeleteTag = (tag: Tag) => {
+    setDeleteError(null);
+    setPendingDelete({ kind: "tag", id: tag.id, name: tag.name });
+  };
+
+  const closeDeleteDialog = () => {
+    if (deleteBusy) return;
+    setPendingDelete(null);
+    setDeleteError(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      if (target.kind === "collection") {
+        await deleteCollection(target.id);
+        if (selectedCollectionId === target.id) {
+          setSelectedCollectionId(null);
+        }
+      } else {
+        await deleteTag(target.id);
+        setSelectedTagIds((prev) =>
+          prev.includes(target.id) ? prev.filter((id) => id !== target.id) : prev
+        );
+      }
+
+      const { kind, name } = target;
+      setPendingDelete(null);
+      await loadOrganization();
+      setActionAlert({
+        type: "success",
+        message: `${
+          kind === "collection" ? "Collection" : "Tag"
+        } "${name}" was deleted from LibOne. Original files on disk were not changed.`,
+      });
+    } catch (e: any) {
+      setDeleteError(e?.message ?? String(e));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  // ── Multi-file selection & organization actions ───────────────────────────
+
+  const toggleFileSelection = (fileId: number) => {
+    setSelectedFileIds((prev) =>
+      prev.includes(fileId) ? prev.filter((id) => id !== fileId) : [...prev, fileId]
+    );
+  };
+
+  const togglePageSelection = () => {
+    const pageIds = files.map((file) => file.id);
+    setSelectedFileIds((prev) =>
+      pageIds.length > 0 && pageIds.every((id) => prev.includes(id)) ? [] : pageIds
+    );
+  };
+
+  const openBulkAction = (
+    kind: "collection" | "tag",
+    action: "add" | "remove"
+  ) => {
+    setBulkAction({ kind, action });
+  };
+
+  const handleBulkConfirm = async (targetId: number) => {
+    if (!bulkAction) return;
+    const fileIds = [...selectedFileIds];
+    if (fileIds.length === 0) {
+      throw new Error("No files are selected.");
+    }
+
+    const { kind, action } = bulkAction;
+    const targetName =
+      kind === "collection"
+        ? collections.find((c) => c.id === targetId)?.name ?? "collection"
+        : tags.find((t) => t.id === targetId)?.name ?? "tag";
+
+    if (kind === "collection") {
+      if (action === "add") {
+        await addFilesToCollection(fileIds, targetId);
+      } else {
+        await removeFilesFromCollection(fileIds, targetId);
+      }
+    } else {
+      if (action === "add") {
+        await addFilesToTag(fileIds, targetId);
+      } else {
+        await removeFilesFromTag(fileIds, targetId);
+      }
+    }
+
+    await loadOrganization();
+    await loadFiles();
+    setSelectedFileIds([]);
+    setActionAlert({
+      type: "success",
+      message: `${
+        action === "add" ? "Added" : "Removed"
+      } ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} ${
+        action === "add" ? "to" : "from"
+      } ${kind} "${targetName}" in LibOne. Original files were not modified.`,
+    });
   };
 
   // ── Scan all ──────────────────────────────────────────────────────────────
@@ -375,6 +672,43 @@ export const App: React.FC = () => {
     if (e === "txt" || e === "md") return "ext-txt";
     return "";
   };
+
+  // ── Derived view state ────────────────────────────────────────────────────
+
+  const activeCollection =
+    selectedCollectionId !== null
+      ? collections.find((c) => c.id === selectedCollectionId) ?? null
+      : null;
+  const activeTags = selectedTagIds
+    .map((id) => tags.find((t) => t.id === id))
+    .filter((t): t is Tag => Boolean(t));
+  const hasOrganizationFilter =
+    selectedCollectionId !== null || selectedTagIds.length > 0;
+  const hasAnyFilter =
+    Boolean(searchQuery) ||
+    statusFilter !== "all" ||
+    extensionFilter !== "all" ||
+    hasOrganizationFilter;
+
+  const allPageSelected =
+    files.length > 0 && files.every((file) => selectedFileIds.includes(file.id));
+  const somePageSelected = files.some((file) => selectedFileIds.includes(file.id));
+
+  const bulkOptions = bulkAction
+    ? bulkAction.kind === "collection"
+      ? collections.map((collection) => ({
+          id: collection.id,
+          name: collection.name,
+          color: collection.color_nullable,
+          count: collectionCounts[collection.id] ?? 0,
+        }))
+      : tags.map((tag) => ({
+          id: tag.id,
+          name: tag.name,
+          color: tag.color_nullable,
+          count: tagCounts[tag.id] ?? 0,
+        }))
+    : [];
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -615,6 +949,28 @@ export const App: React.FC = () => {
                 setScanScreenRootId(id);
                 setScanScreenOpen(true);
               }}
+              organizationSections={
+                <OrganizationPanel
+                  collections={collections}
+                  tags={tags}
+                  collectionCounts={collectionCounts}
+                  tagCounts={tagCounts}
+                  loading={organizationLoading}
+                  error={organizationError}
+                  selectedCollectionId={selectedCollectionId}
+                  selectedTagIds={selectedTagIds}
+                  onSelectCollection={handleSelectCollection}
+                  onToggleTag={handleToggleTag}
+                  onClearFilters={handleClearOrganizationFilters}
+                  onRetry={loadOrganization}
+                  onCreateCollection={openCreateCollection}
+                  onEditCollection={openEditCollection}
+                  onDeleteCollection={requestDeleteCollection}
+                  onCreateTag={openCreateTag}
+                  onEditTag={openEditTag}
+                  onDeleteTag={requestDeleteTag}
+                />
+              }
             />
           )}
 
@@ -681,7 +1037,121 @@ export const App: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Active collection / tag filter chips */}
+              {hasOrganizationFilter && (
+                <div className="active-filters-row">
+                  <span className="active-filters-label">Filtering by:</span>
+                  {activeCollection && (
+                    <span className="active-filter-chip">
+                      <span
+                        className="org-color-dot"
+                        style={{ background: activeCollection.color_nullable || "#3b82f6" }}
+                      />
+                      <span>{activeCollection.name}</span>
+                      <button
+                        type="button"
+                        className="active-filter-chip-remove"
+                        onClick={() => setSelectedCollectionId(null)}
+                        title="Clear collection filter"
+                        aria-label="Clear collection filter"
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  )}
+                  {activeTags.map((tag) => (
+                    <span key={tag.id} className="active-filter-chip">
+                      <span
+                        className="org-color-dot"
+                        style={{ background: tag.color_nullable || "#3b82f6" }}
+                      />
+                      <span>{tag.name}</span>
+                      <button
+                        type="button"
+                        className="active-filter-chip-remove"
+                        onClick={() => handleToggleTag(tag.id)}
+                        title={`Clear "${tag.name}" filter`}
+                        aria-label={`Clear ${tag.name} filter`}
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    className="clear-filters-btn"
+                    onClick={handleClearOrganizationFilters}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              )}
             </div>
+
+            {/* ── Multi-file organization action bar ─────────────────────── */}
+            {selectedFileIds.length > 0 && (
+              <div
+                className="selection-bar"
+                role="region"
+                aria-label="Actions for selected files"
+              >
+                <div className="selection-summary">
+                  <SquareCheck size={15} color="#60a5fa" />
+                  <span>
+                    <strong>{selectedFileIds.length}</strong> file
+                    {selectedFileIds.length === 1 ? "" : "s"} selected
+                  </span>
+                </div>
+                <div className="bulk-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 9px", fontSize: "0.74rem" }}
+                    onClick={() => openBulkAction("collection", "add")}
+                    title="Add selected files to a collection (metadata only)"
+                  >
+                    <FolderPlus size={12} /> Add to collection
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 9px", fontSize: "0.74rem" }}
+                    onClick={() => openBulkAction("collection", "remove")}
+                    title="Remove selected files from a collection (metadata only)"
+                  >
+                    <FolderMinus size={12} /> Remove from collection
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 9px", fontSize: "0.74rem" }}
+                    onClick={() => openBulkAction("tag", "add")}
+                    title="Add a tag to selected files (metadata only)"
+                  >
+                    <TagIcon size={12} /> Add tag
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 9px", fontSize: "0.74rem" }}
+                    onClick={() => openBulkAction("tag", "remove")}
+                    title="Remove a tag from selected files (metadata only)"
+                  >
+                    <Tags size={12} /> Remove tag
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 9px", fontSize: "0.74rem" }}
+                    onClick={() => setSelectedFileIds([])}
+                    title="Clear selection"
+                  >
+                    <X size={12} /> Clear
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Action Alert Banner (e.g. missing file on disk notification) */}
             {actionAlert && (
@@ -691,20 +1161,33 @@ export const App: React.FC = () => {
                   background:
                     actionAlert.type === "error"
                       ? "rgba(239, 68, 68, 0.15)"
+                      : actionAlert.type === "success"
+                      ? "rgba(16, 185, 129, 0.15)"
                       : "rgba(245, 158, 11, 0.15)",
                   border: `1px solid ${
                     actionAlert.type === "error"
                       ? "rgba(239, 68, 68, 0.3)"
+                      : actionAlert.type === "success"
+                      ? "rgba(16, 185, 129, 0.3)"
                       : "rgba(245, 158, 11, 0.3)"
                   }`,
-                  color: actionAlert.type === "error" ? "#fca5a5" : "#fcd34d",
+                  color:
+                    actionAlert.type === "error"
+                      ? "#fca5a5"
+                      : actionAlert.type === "success"
+                      ? "#6ee7b7"
+                      : "#fcd34d",
                 }}
               >
                 <div className="stats-badges-group">
-                  <AlertTriangle
-                    size={15}
-                    color={actionAlert.type === "error" ? "#f87171" : "#fbbf24"}
-                  />
+                  {actionAlert.type === "success" ? (
+                    <CheckCircle2 size={15} color="#34d399" />
+                  ) : (
+                    <AlertTriangle
+                      size={15}
+                      color={actionAlert.type === "error" ? "#f87171" : "#fbbf24"}
+                    />
+                  )}
                   <span>{actionAlert.message}</span>
                 </div>
                 <button
@@ -762,6 +1245,23 @@ export const App: React.FC = () => {
                 <table className="file-table">
                   <thead>
                     <tr>
+                      <th
+                        style={{ width: 36 }}
+                        title="Select files on this page for bulk actions"
+                      >
+                        <input
+                          type="checkbox"
+                          className="row-checkbox"
+                          checked={allPageSelected}
+                          onChange={togglePageSelection}
+                          ref={(el) => {
+                            if (el) {
+                              el.indeterminate = somePageSelected && !allPageSelected;
+                            }
+                          }}
+                          aria-label="Select all files on this page"
+                        />
+                      </th>
                       <th
                         className="th-sortable"
                         onClick={() => handleSort("name")}
@@ -827,6 +1327,18 @@ export const App: React.FC = () => {
                         onClick={() => handleViewDetail(file.id)}
                         title="Click to view file details"
                       >
+                        <td
+                          className="file-cell file-cell--select"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="checkbox"
+                            className="row-checkbox"
+                            checked={selectedFileIds.includes(file.id)}
+                            onChange={() => toggleFileSelection(file.id)}
+                            aria-label={`Select ${file.file_name}`}
+                          />
+                        </td>
                         <td className="file-cell">
                           <div className="file-name-cell">
                             <span
@@ -949,28 +1461,32 @@ export const App: React.FC = () => {
                   <FileText className="empty-state-icon" />
                   <h3>No documents found</h3>
                   <p>
-                    {searchQuery ||
-                    statusFilter !== "all" ||
-                    extensionFilter !== "all"
-                      ? "No indexed files match your active filters or search terms."
+                    {hasAnyFilter
+                      ? hasOrganizationFilter &&
+                        !searchQuery &&
+                        statusFilter === "all" &&
+                        extensionFilter === "all"
+                        ? "No indexed files match the selected collection and tag filters."
+                        : "No indexed files match your active filters or search terms."
                       : roots.length === 0
                       ? "Add a folder to begin indexing your documents."
                       : "This folder has not been scanned yet, or contains no files."}
                   </p>
                   <div style={{ marginTop: 12, display: "flex", gap: 8, justifyContent: "center" }}>
-                    {(searchQuery || statusFilter !== "all" || extensionFilter !== "all") && (
+                    {hasAnyFilter && (
                       <button
                         className="btn btn-secondary"
                         onClick={() => {
                           setSearchQuery("");
                           setStatusFilter("all");
                           setExtensionFilter("all");
+                          handleClearOrganizationFilters();
                         }}
                       >
                         Clear Filters & Search
                       </button>
                     )}
-                    {roots.length > 0 && !searchQuery && statusFilter === "all" && extensionFilter === "all" && (
+                    {roots.length > 0 && !hasAnyFilter && (
                       <button
                         className="btn btn-primary"
                         onClick={handleScanAll}
@@ -1194,6 +1710,44 @@ export const App: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Phase 2 collection & tag management dialogs ──────────────────── */}
+      <CollectionModal
+        isOpen={collectionModalOpen}
+        collection={editingCollection}
+        onClose={closeCollectionModal}
+        onSaved={handleCollectionSaved}
+      />
+
+      <TagModal
+        isOpen={tagModalOpen}
+        tag={editingTag}
+        onClose={closeTagModal}
+        onSaved={handleTagSaved}
+      />
+
+      <ConfirmDeleteDialog
+        isOpen={pendingDelete !== null}
+        kind={pendingDelete?.kind ?? "collection"}
+        itemName={pendingDelete?.name ?? ""}
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={handleConfirmDelete}
+        onCancel={closeDeleteDialog}
+      />
+
+      {bulkAction && (
+        <BulkAssignModal
+          isOpen
+          kind={bulkAction.kind}
+          action={bulkAction.action}
+          fileCount={selectedFileIds.length}
+          options={bulkOptions}
+          loading={organizationLoading}
+          onClose={() => setBulkAction(null)}
+          onConfirm={handleBulkConfirm}
+        />
       )}
 
       {/* ── Settings / Library Storage modal ───────────────────────────────── */}
