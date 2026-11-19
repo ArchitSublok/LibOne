@@ -246,3 +246,11 @@ pub struct DuplicateGroup {
     pub status: String,
     pub file_ids: Vec<i64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BulkSuggestionResult {
+    pub approved_ids: Vec<i64>,
+    pub rejected_ids: Vec<i64>,
+    pub failed_ids: Vec<i64>,
+    pub errors: Vec<String>,
+}

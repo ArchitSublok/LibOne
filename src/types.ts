@@ -180,3 +180,38 @@ export interface LibraryExport {
   file_tags: FileTagLink[];
   file_notes: FileNote[];
 }
+
+// ── Phase 3: Suggestions & Duplicates ────────────────────────────────────────
+
+export interface OrganizationSuggestion {
+  id: number;
+  suggestion_type: "duplicate_files" | "likely_version" | "suggest_collection" | "suggest_tag" | "stale_file" | string;
+  title: string;
+  rationale: string;
+  confidence: number;
+  status: "pending" | "approved" | "rejected" | "dismissed" | string;
+  created_at: string;
+  reviewed_at: string | null;
+  affected_file_ids: number[];
+  suggested_tag_id: number | null;
+  suggested_tag_name: string | null;
+  suggested_collection_id: number | null;
+  suggested_collection_name: string | null;
+}
+
+export interface DuplicateGroup {
+  id: number;
+  match_type: "file_identity" | "exact_hash" | "name_and_size" | string;
+  confidence: number;
+  created_at: string;
+  status: "pending" | "approved" | "rejected" | "dismissed" | string;
+  file_ids: number[];
+}
+
+export interface BulkSuggestionResult {
+  approved_ids: number[];
+  rejected_ids: number[];
+  failed_ids: number[];
+  errors: string[];
+}
+

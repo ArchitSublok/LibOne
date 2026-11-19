@@ -3,7 +3,9 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AppInfo,
+  BulkSuggestionResult,
   Collection,
+  DuplicateGroup,
   FileCollectionLink,
   FileDetail,
   FileNote,
@@ -11,6 +13,7 @@ import {
   FileTagLink,
   IndexedFile,
   LibraryExport,
+  OrganizationSuggestion,
   PaginatedFiles,
   ScanOptions,
   ScanProgress,
@@ -203,6 +206,42 @@ let mockNotes: FileNote[] = [
     updated_at: new Date(Date.now() - 86400000 * 1).toISOString(),
   },
 ];
+
+let mockSuggestions: OrganizationSuggestion[] = [
+  {
+    id: 1,
+    suggestion_type: "suggest_collection",
+    title: "Group files into collection 'Downloads'",
+    rationale: "Folder 'Downloads' contains 2 documents.",
+    confidence: 0.8,
+    status: "pending",
+    created_at: new Date().toISOString(),
+    reviewed_at: null,
+    affected_file_ids: [4, 5],
+    suggested_tag_id: null,
+    suggested_tag_name: null,
+    suggested_collection_id: null,
+    suggested_collection_name: "Downloads",
+  },
+  {
+    id: 2,
+    suggestion_type: "suggest_tag",
+    title: "Tag 2 files with 'pdf'",
+    rationale: "2 files match pdf format",
+    confidence: 0.75,
+    status: "pending",
+    created_at: new Date().toISOString(),
+    reviewed_at: null,
+    affected_file_ids: [1, 2],
+    suggested_tag_id: null,
+    suggested_tag_name: "pdf",
+    suggested_collection_id: null,
+    suggested_collection_name: null,
+  },
+];
+
+let mockDuplicateGroups: DuplicateGroup[] = [];
+
 
 // ── API functions ─────────────────────────────────────────────────────────────
 
@@ -1242,6 +1281,282 @@ export async function getTagCounts(
   );
   return counts;
 }
+
+// ── Phase 3: Suggestion & Duplicate API Functions ────────────────────────────
+
+export async function listPendingSuggestions(): Promise<OrganizationSuggestion[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<OrganizationSuggestion[]>("list_pending_suggestions");
+  }
+  return mockSuggestions.filter((s) => s.status === "pending");
+}
+
+export async function listOrganizationSuggestions(
+  status?: string | null,
+  suggestionType?: string | null
+): Promise<OrganizationSuggestion[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<OrganizationSuggestion[]>("list_organization_suggestions", {
+      status: status || null,
+      suggestionType: suggestionType || null,
+    });
+  }
+  let filtered = [...mockSuggestions];
+  if (status && status !== "all") {
+    filtered = filtered.filter((s) => s.status.toLowerCase() === status.toLowerCase());
+  }
+  if (suggestionType && suggestionType !== "all") {
+    filtered = filtered.filter((s) => s.suggestion_type.toLowerCase() === suggestionType.toLowerCase());
+  }
+  return filtered;
+}
+
+export async function getOrganizationSuggestion(
+  id: number
+): Promise<OrganizationSuggestion> {
+  if (isTauriEnvironment()) {
+    return await invoke<OrganizationSuggestion>("get_organization_suggestion", { id });
+  }
+  const suggestion = mockSuggestions.find((s) => s.id === id);
+  if (!suggestion) throw new Error(`Suggestion #${id} not found.`);
+  return suggestion;
+}
+
+export async function approveSuggestion(
+  id: number
+): Promise<OrganizationSuggestion> {
+  if (isTauriEnvironment()) {
+    return await invoke<OrganizationSuggestion>("approve_suggestion", { id });
+  }
+  const suggestion = mockSuggestions.find((s) => s.id === id);
+  if (!suggestion) throw new Error(`Suggestion #${id} not found.`);
+  if (suggestion.status === "approved") return suggestion;
+
+  // Mock metadata creation
+  if (suggestion.suggestion_type === "suggest_collection") {
+    let colId = suggestion.suggested_collection_id;
+    if (!colId && suggestion.suggested_collection_name) {
+      const existing = mockCollections.find(
+        (c) => c.name.toLowerCase() === suggestion.suggested_collection_name!.toLowerCase()
+      );
+      if (existing) {
+        colId = existing.id;
+      } else {
+        colId = ++mockIdCounter;
+        mockCollections.push({
+          id: colId,
+          name: suggestion.suggested_collection_name,
+          description_nullable: null,
+          color_nullable: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+    if (colId) {
+      for (const fid of suggestion.affected_file_ids) {
+        if (!mockFileCollections.some((l) => l.file_id === fid && l.collection_id === colId)) {
+          mockFileCollections.push({
+            file_id: fid,
+            collection_id: colId,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  } else if (suggestion.suggestion_type === "suggest_tag") {
+    let tagId = suggestion.suggested_tag_id;
+    if (!tagId && suggestion.suggested_tag_name) {
+      const existing = mockTags.find(
+        (t) => t.name.toLowerCase() === suggestion.suggested_tag_name!.toLowerCase()
+      );
+      if (existing) {
+        tagId = existing.id;
+      } else {
+        tagId = ++mockIdCounter;
+        mockTags.push({
+          id: tagId,
+          name: suggestion.suggested_tag_name,
+          color_nullable: null,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+    if (tagId) {
+      for (const fid of suggestion.affected_file_ids) {
+        if (!mockFileTags.some((l) => l.file_id === fid && l.tag_id === tagId)) {
+          mockFileTags.push({
+            file_id: fid,
+            tag_id: tagId,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
+  suggestion.status = "approved";
+  suggestion.reviewed_at = new Date().toISOString();
+  return suggestion;
+}
+
+export async function rejectSuggestion(
+  id: number
+): Promise<OrganizationSuggestion> {
+  if (isTauriEnvironment()) {
+    return await invoke<OrganizationSuggestion>("reject_suggestion", { id });
+  }
+  const suggestion = mockSuggestions.find((s) => s.id === id);
+  if (!suggestion) throw new Error(`Suggestion #${id} not found.`);
+  suggestion.status = "rejected";
+  suggestion.reviewed_at = new Date().toISOString();
+  return suggestion;
+}
+
+export async function dismissSuggestion(
+  id: number
+): Promise<OrganizationSuggestion> {
+  if (isTauriEnvironment()) {
+    return await invoke<OrganizationSuggestion>("dismiss_suggestion", { id });
+  }
+  const suggestion = mockSuggestions.find((s) => s.id === id);
+  if (!suggestion) throw new Error(`Suggestion #${id} not found.`);
+  suggestion.status = "dismissed";
+  suggestion.reviewed_at = new Date().toISOString();
+  return suggestion;
+}
+
+export async function listDuplicateGroups(
+  status?: string | null
+): Promise<DuplicateGroup[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroup[]>("list_duplicate_groups", {
+      status: status || null,
+    });
+  }
+  let groups = [...mockDuplicateGroups];
+  if (status && status !== "all") {
+    groups = groups.filter((g) => g.status.toLowerCase() === status.toLowerCase());
+  }
+  return groups;
+}
+
+export async function getDuplicateGroup(id: number): Promise<DuplicateGroup> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroup>("get_duplicate_group", { id });
+  }
+  const group = mockDuplicateGroups.find((g) => g.id === id);
+  if (!group) throw new Error(`Duplicate group #${id} not found.`);
+  return group;
+}
+
+export async function approveDuplicateGroup(
+  id: number,
+  preferredFileId?: number | null
+): Promise<DuplicateGroup> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroup>("approve_duplicate_group", {
+      id,
+      preferredFileId: preferredFileId ?? null,
+    });
+  }
+  const group = mockDuplicateGroups.find((g) => g.id === id);
+  if (!group) throw new Error(`Duplicate group #${id} not found.`);
+  group.status = "approved";
+  return group;
+}
+
+export async function rejectDuplicateGroup(
+  id: number
+): Promise<DuplicateGroup> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroup>("reject_duplicate_group", { id });
+  }
+  const group = mockDuplicateGroups.find((g) => g.id === id);
+  if (!group) throw new Error(`Duplicate group #${id} not found.`);
+  group.status = "rejected";
+  return group;
+}
+
+export async function dismissDuplicateGroup(
+  id: number
+): Promise<DuplicateGroup> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroup>("dismiss_duplicate_group", { id });
+  }
+  const group = mockDuplicateGroups.find((g) => g.id === id);
+  if (!group) throw new Error(`Duplicate group #${id} not found.`);
+  group.status = "dismissed";
+  return group;
+}
+
+export async function bulkApproveSuggestions(
+  suggestionIds: number[]
+): Promise<BulkSuggestionResult> {
+  if (isTauriEnvironment()) {
+    return await invoke<BulkSuggestionResult>("bulk_approve_suggestions", {
+      suggestionIds,
+    });
+  }
+  const approvedIds: number[] = [];
+  const failedIds: number[] = [];
+  const errors: string[] = [];
+
+  for (const id of suggestionIds) {
+    try {
+      await approveSuggestion(id);
+      approvedIds.push(id);
+    } catch (e: any) {
+      failedIds.push(id);
+      errors.push(`Suggestion #${id}: ${e?.message || e}`);
+    }
+  }
+
+  return {
+    approved_ids: approvedIds,
+    rejected_ids: [],
+    failed_ids: failedIds,
+    errors,
+  };
+}
+
+export async function bulkRejectSuggestions(
+  suggestionIds: number[]
+): Promise<BulkSuggestionResult> {
+  if (isTauriEnvironment()) {
+    return await invoke<BulkSuggestionResult>("bulk_reject_suggestions", {
+      suggestionIds,
+    });
+  }
+  const rejectedIds: number[] = [];
+  const failedIds: number[] = [];
+  const errors: string[] = [];
+
+  for (const id of suggestionIds) {
+    try {
+      await rejectSuggestion(id);
+      rejectedIds.push(id);
+    } catch (e: any) {
+      failedIds.push(id);
+      errors.push(`Suggestion #${id}: ${e?.message || e}`);
+    }
+  }
+
+  return {
+    approved_ids: [],
+    rejected_ids: rejectedIds,
+    failed_ids: failedIds,
+    errors,
+  };
+}
+
+export async function generateSuggestions(): Promise<[number, number]> {
+  if (isTauriEnvironment()) {
+    return await invoke<[number, number]>("generate_suggestions");
+  }
+  return [mockSuggestions.length, mockDuplicateGroups.length];
+}
+
 
 
 

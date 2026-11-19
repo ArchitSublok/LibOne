@@ -1,8 +1,8 @@
 //! The local SQLite repository. SQL is deliberately contained here, away from Tauri commands.
 
 use crate::models::{
-    Collection, DuplicateGroup, ExportSummary, FileCollectionLink, FileDetail, FileNote,
-    FileQueryParams, FileTagLink, IndexedFile, LibraryExport, NewIndexedFile,
+    BulkSuggestionResult, Collection, DuplicateGroup, ExportSummary, FileCollectionLink,
+    FileDetail, FileNote, FileQueryParams, FileTagLink, IndexedFile, LibraryExport, NewIndexedFile,
     OrganizationSuggestion, PaginatedFiles, ScanRoot, ScanStats, Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
@@ -38,7 +38,7 @@ impl Database {
         self.db_path.clone()
     }
 
-    fn open(&self) -> Result<Connection> {
+    pub(crate) fn open(&self) -> Result<Connection> {
         let conn = Connection::open(&self.db_path)?;
         conn.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
@@ -1354,6 +1354,325 @@ impl Database {
     ) -> Result<(usize, usize)> {
         let engine = crate::analyzer::SuggestionEngine::new(options.unwrap_or_default());
         engine.run_and_persist(self)
+    }
+
+    /// Approves an organization suggestion, creating or reusing Phase 2 metadata (collections, tags)
+    /// and linking affected files without altering or moving physical files on disk.
+    /// Operation is idempotent: repeated approval returns the approved suggestion safely.
+    pub fn approve_suggestion(&self, id: i64) -> Result<OrganizationSuggestion> {
+        let suggestion = self
+            .get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        if suggestion.status == "approved" {
+            return Ok(suggestion);
+        }
+
+        // Validate that all affected file IDs exist in the indexed files table
+        for &fid in &suggestion.affected_file_ids {
+            if self.get_indexed_file(fid)?.is_none() {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+
+        match suggestion.suggestion_type.as_str() {
+            "suggest_collection" => {
+                let col_id = if let Some(cid) = suggestion.suggested_collection_id {
+                    if self.get_collection(cid)?.is_some() {
+                        cid
+                    } else if let Some(ref name) = suggestion.suggested_collection_name {
+                        let existing = self
+                            .list_collections()?
+                            .into_iter()
+                            .find(|c| c.name.eq_ignore_ascii_case(name));
+                        match existing {
+                            Some(c) => c.id,
+                            None => self.create_collection(name, None, None)?.id,
+                        }
+                    } else {
+                        return Err(rusqlite::Error::QueryReturnedNoRows);
+                    }
+                } else if let Some(ref name) = suggestion.suggested_collection_name {
+                    let existing = self
+                        .list_collections()?
+                        .into_iter()
+                        .find(|c| c.name.eq_ignore_ascii_case(name));
+                    match existing {
+                        Some(c) => c.id,
+                        None => self.create_collection(name, None, None)?.id,
+                    }
+                } else {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                };
+
+                for &fid in &suggestion.affected_file_ids {
+                    let _ = self.add_file_to_collection(fid, col_id);
+                }
+            }
+            "suggest_tag" => {
+                let tag_id = if let Some(tid) = suggestion.suggested_tag_id {
+                    if self.get_tag(tid)?.is_some() {
+                        tid
+                    } else if let Some(ref name) = suggestion.suggested_tag_name {
+                        let existing = self
+                            .list_tags()?
+                            .into_iter()
+                            .find(|t| t.name.eq_ignore_ascii_case(name));
+                        match existing {
+                            Some(t) => t.id,
+                            None => self.create_tag(name, None)?.id,
+                        }
+                    } else {
+                        return Err(rusqlite::Error::QueryReturnedNoRows);
+                    }
+                } else if let Some(ref name) = suggestion.suggested_tag_name {
+                    let existing = self
+                        .list_tags()?
+                        .into_iter()
+                        .find(|t| t.name.eq_ignore_ascii_case(name));
+                    match existing {
+                        Some(t) => t.id,
+                        None => self.create_tag(name, None)?.id,
+                    }
+                } else {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                };
+
+                for &fid in &suggestion.affected_file_ids {
+                    let _ = self.add_file_to_tag(fid, tag_id);
+                }
+            }
+            "likely_version" => {
+                let tag_name = suggestion
+                    .suggested_tag_name
+                    .as_deref()
+                    .unwrap_or("version-series");
+                let existing = self
+                    .list_tags()?
+                    .into_iter()
+                    .find(|t| t.name.eq_ignore_ascii_case(tag_name));
+                let tag_id = match existing {
+                    Some(t) => t.id,
+                    None => self.create_tag(tag_name, None)?.id,
+                };
+                for &fid in &suggestion.affected_file_ids {
+                    let _ = self.add_file_to_tag(fid, tag_id);
+                }
+            }
+            "stale_file" => {
+                let tag_name = suggestion
+                    .suggested_tag_name
+                    .as_deref()
+                    .unwrap_or("archive");
+                let existing = self
+                    .list_tags()?
+                    .into_iter()
+                    .find(|t| t.name.eq_ignore_ascii_case(tag_name));
+                let tag_id = match existing {
+                    Some(t) => t.id,
+                    None => self.create_tag(tag_name, None)?.id,
+                };
+                for &fid in &suggestion.affected_file_ids {
+                    let _ = self.add_file_to_tag(fid, tag_id);
+                }
+            }
+            "duplicate_files" => {
+                let existing = self
+                    .list_tags()?
+                    .into_iter()
+                    .find(|t| t.name.eq_ignore_ascii_case("duplicate"));
+                let tag_id = match existing {
+                    Some(t) => t.id,
+                    None => self.create_tag("duplicate", None)?.id,
+                };
+                for &fid in &suggestion.affected_file_ids {
+                    let _ = self.add_file_to_tag(fid, tag_id);
+                }
+            }
+            _ => {}
+        }
+
+        self.update_suggestion_status(id, "approved")?;
+        self.get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Rejects an organization suggestion. Idempotent.
+    pub fn reject_suggestion(&self, id: i64) -> Result<OrganizationSuggestion> {
+        let suggestion = self
+            .get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        if suggestion.status == "rejected" {
+            return Ok(suggestion);
+        }
+
+        self.update_suggestion_status(id, "rejected")?;
+        self.get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Dismisses an organization suggestion. Idempotent.
+    pub fn dismiss_suggestion(&self, id: i64) -> Result<OrganizationSuggestion> {
+        let suggestion = self
+            .get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        if suggestion.status == "dismissed" {
+            return Ok(suggestion);
+        }
+
+        self.update_suggestion_status(id, "dismissed")?;
+        self.get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Approves a duplicate group without deleting or altering files.
+    /// Tags duplicate files with "duplicate" and marks the preferred/canonical file with "canonical"
+    /// and adds descriptive metadata notes. Idempotent.
+    pub fn approve_duplicate_group(
+        &self,
+        group_id: i64,
+        preferred_file_id: Option<i64>,
+    ) -> Result<DuplicateGroup> {
+        let group = self
+            .get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        if group.status == "approved" {
+            return Ok(group);
+        }
+
+        // Validate that all files exist in library
+        for &fid in &group.file_ids {
+            if self.get_indexed_file(fid)?.is_none() {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+
+        // Validate preferred_file_id if provided
+        if let Some(pref_id) = preferred_file_id {
+            if !group.file_ids.contains(&pref_id) {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+
+        // 1. Tag all group files as "duplicate"
+        let dup_tag = match self
+            .list_tags()?
+            .into_iter()
+            .find(|t| t.name.eq_ignore_ascii_case("duplicate"))
+        {
+            Some(t) => t.id,
+            None => self.create_tag("duplicate", None)?.id,
+        };
+        for &fid in &group.file_ids {
+            let _ = self.add_file_to_tag(fid, dup_tag);
+        }
+
+        // 2. Mark canonical / preferred file in metadata only
+        let canonical_id = preferred_file_id.unwrap_or(group.file_ids[0]);
+        let canon_tag = match self
+            .list_tags()?
+            .into_iter()
+            .find(|t| t.name.eq_ignore_ascii_case("canonical"))
+        {
+            Some(t) => t.id,
+            None => self.create_tag("canonical", None)?.id,
+        };
+        let _ = self.add_file_to_tag(canonical_id, canon_tag);
+
+        // 3. Add private note to non-canonical duplicates linking back to the canonical item
+        for &fid in &group.file_ids {
+            if fid != canonical_id {
+                let note = format!(
+                    "[Duplicate Group #{group_id}] Canonical version is file #{canonical_id}"
+                );
+                let _ = self.create_file_note(fid, &note);
+            }
+        }
+
+        self.update_duplicate_group_status(group_id, "approved")?;
+        self.get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Rejects a duplicate group. Idempotent.
+    pub fn reject_duplicate_group(&self, group_id: i64) -> Result<DuplicateGroup> {
+        let group = self
+            .get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        if group.status == "rejected" {
+            return Ok(group);
+        }
+
+        self.update_duplicate_group_status(group_id, "rejected")?;
+        self.get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Dismisses a duplicate group. Idempotent.
+    pub fn dismiss_duplicate_group(&self, group_id: i64) -> Result<DuplicateGroup> {
+        let group = self
+            .get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        if group.status == "dismissed" {
+            return Ok(group);
+        }
+
+        self.update_duplicate_group_status(group_id, "dismissed")?;
+        self.get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Bulk approves multiple suggestions. Returns structured result with successes and failures.
+    pub fn bulk_approve_suggestions(&self, suggestion_ids: &[i64]) -> BulkSuggestionResult {
+        let mut approved_ids = Vec::new();
+        let mut failed_ids = Vec::new();
+        let mut errors = Vec::new();
+
+        for &id in suggestion_ids {
+            match self.approve_suggestion(id) {
+                Ok(_) => approved_ids.push(id),
+                Err(e) => {
+                    failed_ids.push(id);
+                    errors.push(format!("Suggestion #{id}: {e}"));
+                }
+            }
+        }
+
+        BulkSuggestionResult {
+            approved_ids,
+            rejected_ids: Vec::new(),
+            failed_ids,
+            errors,
+        }
+    }
+
+    /// Bulk rejects multiple suggestions. Returns structured result with successes and failures.
+    pub fn bulk_reject_suggestions(&self, suggestion_ids: &[i64]) -> BulkSuggestionResult {
+        let mut rejected_ids = Vec::new();
+        let mut failed_ids = Vec::new();
+        let mut errors = Vec::new();
+
+        for &id in suggestion_ids {
+            match self.reject_suggestion(id) {
+                Ok(_) => rejected_ids.push(id),
+                Err(e) => {
+                    failed_ids.push(id);
+                    errors.push(format!("Suggestion #{id}: {e}"));
+                }
+            }
+        }
+
+        BulkSuggestionResult {
+            approved_ids: Vec::new(),
+            rejected_ids,
+            failed_ids,
+            errors,
+        }
     }
 }
 

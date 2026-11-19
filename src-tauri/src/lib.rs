@@ -93,6 +93,21 @@ pub fn run() {
             commands::list_file_notes,
             commands::update_file_note,
             commands::delete_file_note,
+            // Phase 3: Suggestions & Duplicates
+            commands::list_pending_suggestions,
+            commands::list_organization_suggestions,
+            commands::get_organization_suggestion,
+            commands::approve_suggestion,
+            commands::reject_suggestion,
+            commands::dismiss_suggestion,
+            commands::list_duplicate_groups,
+            commands::get_duplicate_group,
+            commands::approve_duplicate_group,
+            commands::reject_duplicate_group,
+            commands::dismiss_duplicate_group,
+            commands::bulk_approve_suggestions,
+            commands::bulk_reject_suggestions,
+            commands::generate_suggestions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibOne application");

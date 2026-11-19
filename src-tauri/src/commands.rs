@@ -11,9 +11,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::Database;
 use crate::models::{
-    AppInfo, Collection, FileCollectionLink, FileDetail, FileNote, FileQueryParams, FileTagLink,
-    IndexedFile, LibraryExport, PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats,
-    Tag, WatcherOverallStatus, EXPORT_FORMAT_VERSION,
+    AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, FileCollectionLink, FileDetail,
+    FileNote, FileQueryParams, FileTagLink, IndexedFile, LibraryExport, OrganizationSuggestion,
+    PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats, Tag, WatcherOverallStatus,
+    EXPORT_FORMAT_VERSION,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -1466,6 +1467,339 @@ pub fn delete_file_note(note_id: i64, state: State<'_, AppState>) -> Result<(), 
     delete_file_note_inner(&db, note_id)
 }
 
+// ── Phase 3: Suggestions & Duplicates ────────────────────────────────────────
+
+pub fn validate_positive_id(id: i64, entity: &str) -> Result<(), String> {
+    if id <= 0 {
+        return Err(format!(
+            "Invalid ID: {entity} #{id} must be a positive integer."
+        ));
+    }
+    Ok(())
+}
+
+pub fn list_organization_suggestions_inner(
+    db: &Database,
+    status: Option<&str>,
+    suggestion_type: Option<&str>,
+) -> Result<Vec<OrganizationSuggestion>, String> {
+    db.list_organization_suggestions(status, suggestion_type)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_pending_suggestions(
+    state: State<'_, AppState>,
+) -> Result<Vec<OrganizationSuggestion>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_organization_suggestions_inner(&db, Some("pending"), None)
+}
+
+#[tauri::command]
+pub fn list_organization_suggestions(
+    status: Option<String>,
+    suggestion_type: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<OrganizationSuggestion>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_organization_suggestions_inner(
+        &db,
+        status.as_deref().filter(|s| !s.trim().is_empty()),
+        suggestion_type.as_deref().filter(|s| !s.trim().is_empty()),
+    )
+}
+
+pub fn get_organization_suggestion_inner(
+    db: &Database,
+    id: i64,
+) -> Result<OrganizationSuggestion, String> {
+    validate_positive_id(id, "Suggestion")?;
+    db.get_organization_suggestion(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Suggestion #{id} not found."))
+}
+
+#[tauri::command]
+pub fn get_organization_suggestion(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<OrganizationSuggestion, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_organization_suggestion_inner(&db, id)
+}
+
+pub fn approve_suggestion_inner(db: &Database, id: i64) -> Result<OrganizationSuggestion, String> {
+    validate_positive_id(id, "Suggestion")?;
+    let suggestion = db
+        .get_organization_suggestion(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Suggestion #{id} not found."))?;
+
+    if suggestion.status == "approved" {
+        return Ok(suggestion);
+    }
+
+    // Validate that each affected file exists and belongs to an enabled scan root
+    for &fid in &suggestion.affected_file_ids {
+        validate_file_for_organization(db, fid)?;
+    }
+
+    db.approve_suggestion(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn approve_suggestion(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<OrganizationSuggestion, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    approve_suggestion_inner(&db, id)
+}
+
+pub fn reject_suggestion_inner(db: &Database, id: i64) -> Result<OrganizationSuggestion, String> {
+    validate_positive_id(id, "Suggestion")?;
+    let suggestion = db
+        .get_organization_suggestion(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Suggestion #{id} not found."))?;
+
+    if suggestion.status == "rejected" {
+        return Ok(suggestion);
+    }
+
+    db.reject_suggestion(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn reject_suggestion(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<OrganizationSuggestion, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    reject_suggestion_inner(&db, id)
+}
+
+pub fn dismiss_suggestion_inner(db: &Database, id: i64) -> Result<OrganizationSuggestion, String> {
+    validate_positive_id(id, "Suggestion")?;
+    let suggestion = db
+        .get_organization_suggestion(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Suggestion #{id} not found."))?;
+
+    if suggestion.status == "dismissed" {
+        return Ok(suggestion);
+    }
+
+    db.dismiss_suggestion(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn dismiss_suggestion(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<OrganizationSuggestion, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    dismiss_suggestion_inner(&db, id)
+}
+
+pub fn list_duplicate_groups_inner(
+    db: &Database,
+    status: Option<&str>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    db.list_duplicate_groups(status).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn list_duplicate_groups(
+    status: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    list_duplicate_groups_inner(&db, status.as_deref().filter(|s| !s.trim().is_empty()))
+}
+
+pub fn get_duplicate_group_inner(db: &Database, id: i64) -> Result<DuplicateGroup, String> {
+    validate_positive_id(id, "Duplicate group")?;
+    db.get_duplicate_group(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Duplicate group #{id} not found."))
+}
+
+#[tauri::command]
+pub fn get_duplicate_group(id: i64, state: State<'_, AppState>) -> Result<DuplicateGroup, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_duplicate_group_inner(&db, id)
+}
+
+pub fn approve_duplicate_group_inner(
+    db: &Database,
+    id: i64,
+    preferred_file_id: Option<i64>,
+) -> Result<DuplicateGroup, String> {
+    validate_positive_id(id, "Duplicate group")?;
+    let group = db
+        .get_duplicate_group(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Duplicate group #{id} not found."))?;
+
+    if group.status == "approved" {
+        return Ok(group);
+    }
+
+    for &fid in &group.file_ids {
+        validate_file_for_organization(db, fid)?;
+    }
+
+    if let Some(pref_id) = preferred_file_id {
+        validate_positive_id(pref_id, "Preferred file")?;
+        if !group.file_ids.contains(&pref_id) {
+            return Err(format!(
+                "Preferred file #{pref_id} is not part of duplicate group #{id}."
+            ));
+        }
+        validate_file_for_organization(db, pref_id)?;
+    }
+
+    db.approve_duplicate_group(id, preferred_file_id)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn approve_duplicate_group(
+    id: i64,
+    preferred_file_id: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<DuplicateGroup, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    approve_duplicate_group_inner(&db, id, preferred_file_id)
+}
+
+pub fn reject_duplicate_group_inner(db: &Database, id: i64) -> Result<DuplicateGroup, String> {
+    validate_positive_id(id, "Duplicate group")?;
+    let group = db
+        .get_duplicate_group(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Duplicate group #{id} not found."))?;
+
+    if group.status == "rejected" {
+        return Ok(group);
+    }
+
+    db.reject_duplicate_group(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn reject_duplicate_group(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<DuplicateGroup, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    reject_duplicate_group_inner(&db, id)
+}
+
+pub fn dismiss_duplicate_group_inner(db: &Database, id: i64) -> Result<DuplicateGroup, String> {
+    validate_positive_id(id, "Duplicate group")?;
+    let group = db
+        .get_duplicate_group(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Duplicate group #{id} not found."))?;
+
+    if group.status == "dismissed" {
+        return Ok(group);
+    }
+
+    db.dismiss_duplicate_group(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn dismiss_duplicate_group(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<DuplicateGroup, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    dismiss_duplicate_group_inner(&db, id)
+}
+
+pub fn bulk_approve_suggestions_inner(
+    db: &Database,
+    suggestion_ids: &[i64],
+) -> Result<BulkSuggestionResult, String> {
+    let mut approved_ids = Vec::new();
+    let mut failed_ids = Vec::new();
+    let mut errors = Vec::new();
+
+    for &id in suggestion_ids {
+        match approve_suggestion_inner(db, id) {
+            Ok(_) => approved_ids.push(id),
+            Err(e) => {
+                failed_ids.push(id);
+                errors.push(format!("Suggestion #{id}: {e}"));
+            }
+        }
+    }
+
+    Ok(BulkSuggestionResult {
+        approved_ids,
+        rejected_ids: Vec::new(),
+        failed_ids,
+        errors,
+    })
+}
+
+#[tauri::command]
+pub fn bulk_approve_suggestions(
+    suggestion_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<BulkSuggestionResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    bulk_approve_suggestions_inner(&db, &suggestion_ids)
+}
+
+pub fn bulk_reject_suggestions_inner(
+    db: &Database,
+    suggestion_ids: &[i64],
+) -> Result<BulkSuggestionResult, String> {
+    let mut rejected_ids = Vec::new();
+    let mut failed_ids = Vec::new();
+    let mut errors = Vec::new();
+
+    for &id in suggestion_ids {
+        match reject_suggestion_inner(db, id) {
+            Ok(_) => rejected_ids.push(id),
+            Err(e) => {
+                failed_ids.push(id);
+                errors.push(format!("Suggestion #{id}: {e}"));
+            }
+        }
+    }
+
+    Ok(BulkSuggestionResult {
+        approved_ids: Vec::new(),
+        rejected_ids,
+        failed_ids,
+        errors,
+    })
+}
+
+#[tauri::command]
+pub fn bulk_reject_suggestions(
+    suggestion_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<BulkSuggestionResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    bulk_reject_suggestions_inner(&db, &suggestion_ids)
+}
+
+pub fn generate_suggestions_inner(db: &Database) -> Result<(usize, usize), String> {
+    db.generate_and_store_suggestions(None).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn generate_suggestions(state: State<'_, AppState>) -> Result<(usize, usize), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    generate_suggestions_inner(&db)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2440,6 +2774,605 @@ mod tests {
         assert_eq!(fs::read_to_string(&file_path).unwrap(), document_body);
 
         let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_suggestion_lifecycle_transitions() {
+        let (db, db_dir) = test_auth_db("sugg_lifecycle");
+
+        let s1 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Tag proposal",
+                "Based on year token",
+                0.8,
+                &[],
+                None,
+                Some("2024"),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(s1.status, "pending");
+        assert!(s1.reviewed_at.is_none());
+
+        // 1. Pending -> Approved
+        let approved = approve_suggestion_inner(&db, s1.id).unwrap();
+        assert_eq!(approved.status, "approved");
+        assert!(approved.reviewed_at.is_some());
+
+        // 2. Pending -> Rejected
+        let s2 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Tag proposal 2",
+                "Based on keyword",
+                0.8,
+                &[],
+                None,
+                Some("taxes"),
+                None,
+                None,
+            )
+            .unwrap();
+        let rejected = reject_suggestion_inner(&db, s2.id).unwrap();
+        assert_eq!(rejected.status, "rejected");
+        assert!(rejected.reviewed_at.is_some());
+
+        // 3. Pending -> Dismissed
+        let s3 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Tag proposal 3",
+                "Based on keyword",
+                0.8,
+                &[],
+                None,
+                Some("archive"),
+                None,
+                None,
+            )
+            .unwrap();
+        let dismissed = dismiss_suggestion_inner(&db, s3.id).unwrap();
+        assert_eq!(dismissed.status, "dismissed");
+        assert!(dismissed.reviewed_at.is_some());
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_suggestion_approval_creates_and_reuses_phase2_metadata() {
+        let dir = temp_auth_dir("sugg_metadata");
+        let (db, db_dir) = test_auth_db("sugg_metadata");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Root").unwrap();
+
+        let f1 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("f1.pdf").to_str().unwrap().into(),
+                normalized_path: dir.join("f1.pdf").to_str().unwrap().into(),
+                file_name: "f1.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let f2 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("f2.pdf").to_str().unwrap().into(),
+                normalized_path: dir.join("f2.pdf").to_str().unwrap().into(),
+                file_name: "f2.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 200,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // 1. Suggest collection (new collection name "Tax Audits")
+        let s_col = db
+            .insert_organization_suggestion(
+                "suggest_collection",
+                "Group files into Tax Audits",
+                "Matching directory cluster",
+                0.85,
+                &[f1.id, f2.id],
+                None,
+                None,
+                None,
+                Some("Tax Audits"),
+            )
+            .unwrap();
+
+        let app_col = approve_suggestion_inner(&db, s_col.id).unwrap();
+        assert_eq!(app_col.status, "approved");
+
+        let cols = db.list_collections().unwrap();
+        let created_col = cols.iter().find(|c| c.name == "Tax Audits").unwrap();
+
+        let links1 = db.list_file_collections(f1.id).unwrap();
+        let links2 = db.list_file_collections(f2.id).unwrap();
+        assert!(links1.iter().any(|c| c.id == created_col.id));
+        assert!(links2.iter().any(|c| c.id == created_col.id));
+
+        // 2. Suggest collection reusing existing collection
+        let s_col_reuse = db
+            .insert_organization_suggestion(
+                "suggest_collection",
+                "Group file 2 into Tax Audits again",
+                "Testing reuse",
+                0.9,
+                &[f2.id],
+                None,
+                None,
+                Some(created_col.id),
+                Some("Tax Audits"),
+            )
+            .unwrap();
+        let app_reuse = approve_suggestion_inner(&db, s_col_reuse.id).unwrap();
+        assert_eq!(app_reuse.status, "approved");
+
+        // Verify no duplicate collection was created
+        let cols_after = db.list_collections().unwrap();
+        assert_eq!(cols_after.len(), 1);
+
+        // 3. Suggest tag (new tag "invoice-2024")
+        let s_tag = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Tag with invoice-2024",
+                "Found in filename",
+                0.8,
+                &[f1.id],
+                None,
+                Some("invoice-2024"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let app_tag = approve_suggestion_inner(&db, s_tag.id).unwrap();
+        assert_eq!(app_tag.status, "approved");
+
+        let tags = db.list_tags().unwrap();
+        let created_tag = tags.iter().find(|t| t.name == "invoice-2024").unwrap();
+
+        let tag_links = db.list_file_tags(f1.id).unwrap();
+        assert!(tag_links.iter().any(|t| t.id == created_tag.id));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_duplicate_group_approval_metadata_only_and_preservation_of_original_files() {
+        let dir = temp_auth_dir("dup_preserve");
+        let (db, db_dir) = test_auth_db("dup_preserve");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Root").unwrap();
+
+        // Create actual physical files on disk
+        let file1_path = dir.join("original.txt");
+        let file2_path = dir.join("copy.txt");
+        let body1 = "CONFIDENTIAL ORIGINAL CONTRACT DATA 12345";
+        let body2 = "CONFIDENTIAL ORIGINAL CONTRACT DATA 12345";
+        fs::write(&file1_path, body1).unwrap();
+        fs::write(&file2_path, body2).unwrap();
+
+        let f1 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: file1_path.to_str().unwrap().into(),
+                normalized_path: file1_path.to_str().unwrap().into(),
+                file_name: "original.txt".into(),
+                extension: "txt".into(),
+                size_bytes: body1.len() as i64,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("hash_exact".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let f2 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: file2_path.to_str().unwrap().into(),
+                normalized_path: file2_path.to_str().unwrap().into(),
+                file_name: "copy.txt".into(),
+                extension: "txt".into(),
+                size_bytes: body2.len() as i64,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("hash_exact".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let group = db
+            .insert_duplicate_group("exact_hash", 1.0, &[f1.id, f2.id])
+            .unwrap();
+        assert_eq!(group.status, "pending");
+
+        // Approve duplicate group, designating f1 as the canonical/preferred file
+        let approved_group = approve_duplicate_group_inner(&db, group.id, Some(f1.id)).unwrap();
+        assert_eq!(approved_group.status, "approved");
+
+        // 1. Verify metadata changes in database
+        let tags_f1 = db.list_file_tags(f1.id).unwrap();
+        let tags_f2 = db.list_file_tags(f2.id).unwrap();
+
+        assert!(tags_f1.iter().any(|t| t.name == "duplicate"));
+        assert!(tags_f1.iter().any(|t| t.name == "canonical"));
+        assert!(tags_f2.iter().any(|t| t.name == "duplicate"));
+        assert!(!tags_f2.iter().any(|t| t.name == "canonical"));
+
+        let notes_f2 = db.list_file_notes(f2.id).unwrap();
+        assert!(notes_f2
+            .iter()
+            .any(|n| n.note_text.contains(&format!("file #{}", f1.id))));
+
+        // 2. CRITICAL RULE: Original physical files on disk MUST NOT be moved, renamed, altered, or deleted!
+        assert!(
+            file1_path.exists(),
+            "original file 1 must still exist on disk"
+        );
+        assert!(
+            file2_path.exists(),
+            "original file 2 must still exist on disk"
+        );
+        assert_eq!(
+            fs::read_to_string(&file1_path).unwrap(),
+            body1,
+            "original file 1 contents must be unaltered"
+        );
+        assert_eq!(
+            fs::read_to_string(&file2_path).unwrap(),
+            body2,
+            "original file 2 contents must be unaltered"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_suggestion_invalid_and_missing_ids() {
+        let dir = temp_auth_dir("sugg_invalids");
+        let (db, db_dir) = test_auth_db("sugg_invalids");
+
+        // Invalid negative or zero suggestion ID
+        let err_neg = approve_suggestion_inner(&db, -1);
+        assert!(err_neg.is_err());
+        assert!(err_neg.unwrap_err().contains("must be a positive integer"));
+
+        let err_zero = approve_suggestion_inner(&db, 0);
+        assert!(err_zero.is_err());
+        assert!(err_zero.unwrap_err().contains("must be a positive integer"));
+
+        // Nonexistent suggestion ID
+        let err_nonexist = approve_suggestion_inner(&db, 99999);
+        assert!(err_nonexist.is_err());
+        assert!(err_nonexist
+            .unwrap_err()
+            .contains("Suggestion #99999 not found"));
+
+        // Suggestion referencing nonexistent file ID
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Root").unwrap();
+        let f_ghost = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("ghost.txt").to_str().unwrap().into(),
+                normalized_path: dir.join("ghost.txt").to_str().unwrap().into(),
+                file_name: "ghost.txt".into(),
+                extension: "txt".into(),
+                size_bytes: 50,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let s_missing_file = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Tag ghost file",
+                "Invalid test",
+                0.8,
+                &[f_ghost.id],
+                None,
+                Some("ghost-tag"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        // Delete the file with foreign keys disabled to simulate an orphaned link
+        db.open()
+            .unwrap()
+            .execute_batch(&format!(
+                "PRAGMA foreign_keys = OFF; DELETE FROM indexed_files WHERE id = {}; PRAGMA foreign_keys = ON;",
+                f_ghost.id
+            ))
+            .unwrap();
+
+        let err_ghost = approve_suggestion_inner(&db, s_missing_file.id);
+        assert!(err_ghost.is_err());
+        assert!(err_ghost.unwrap_err().contains("not found in library"));
+
+        // Suggestion referencing file in disabled scan root
+        let f_disabled = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: dir.join("disabled.txt").to_str().unwrap().into(),
+                normalized_path: dir.join("disabled.txt").to_str().unwrap().into(),
+                file_name: "disabled.txt".into(),
+                extension: "txt".into(),
+                size_bytes: 50,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        db.remove_scan_root(root.id).unwrap();
+
+        let s_disabled = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Tag disabled root file",
+                "Testing disabled root",
+                0.8,
+                &[f_disabled.id],
+                None,
+                Some("disabled-tag"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let err_disabled = approve_suggestion_inner(&db, s_disabled.id);
+        assert!(err_disabled.is_err());
+        assert!(err_disabled.unwrap_err().contains("is disabled"));
+
+        // Duplicate group invalid ID
+        let err_dg_neg = approve_duplicate_group_inner(&db, -2, None);
+        assert!(err_dg_neg.is_err());
+        assert!(err_dg_neg
+            .unwrap_err()
+            .contains("must be a positive integer"));
+
+        let err_dg_nonexist = approve_duplicate_group_inner(&db, 99999, None);
+        assert!(err_dg_nonexist.is_err());
+        assert!(err_dg_nonexist
+            .unwrap_err()
+            .contains("Duplicate group #99999 not found"));
+
+        // Duplicate group with invalid preferred file ID
+        let root2_dir = dir.join("root2");
+        let _ = fs::create_dir_all(&root2_dir);
+        let root2 = db
+            .add_scan_root(root2_dir.to_str().unwrap(), "Root2")
+            .unwrap();
+        let f_dg = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root2.id,
+                absolute_path: root2_dir.join("dg.txt").to_str().unwrap().into(),
+                normalized_path: root2_dir.join("dg.txt").to_str().unwrap().into(),
+                file_name: "dg.txt".into(),
+                extension: "txt".into(),
+                size_bytes: 50,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+        let grp = db
+            .insert_duplicate_group("name_and_size", 0.85, &[f_dg.id])
+            .unwrap();
+        let err_pref = approve_duplicate_group_inner(&db, grp.id, Some(99999));
+        assert!(err_pref.is_err());
+        assert!(err_pref
+            .unwrap_err()
+            .contains("not part of duplicate group"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_suggestion_repeated_actions_idempotency() {
+        let (db, db_dir) = test_auth_db("sugg_idempotent");
+
+        let s = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Idempotent tag proposal",
+                "Testing idempotency",
+                0.8,
+                &[],
+                None,
+                Some("idempotent-tag"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        // 1. Repeated approval
+        let app1 = approve_suggestion_inner(&db, s.id).unwrap();
+        assert_eq!(app1.status, "approved");
+
+        let app2 = approve_suggestion_inner(&db, s.id).unwrap();
+        assert_eq!(app2.status, "approved");
+        assert_eq!(app1.id, app2.id);
+
+        // 2. Repeated rejection
+        let s_rej = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Reject proposal",
+                "Testing reject idempotency",
+                0.8,
+                &[],
+                None,
+                Some("rejected-tag"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let rej1 = reject_suggestion_inner(&db, s_rej.id).unwrap();
+        assert_eq!(rej1.status, "rejected");
+
+        let rej2 = reject_suggestion_inner(&db, s_rej.id).unwrap();
+        assert_eq!(rej2.status, "rejected");
+
+        // 3. Repeated dismissal
+        let s_dis = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Dismiss proposal",
+                "Testing dismiss idempotency",
+                0.8,
+                &[],
+                None,
+                Some("dismissed-tag"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let dis1 = dismiss_suggestion_inner(&db, s_dis.id).unwrap();
+        assert_eq!(dis1.status, "dismissed");
+
+        let dis2 = dismiss_suggestion_inner(&db, s_dis.id).unwrap();
+        assert_eq!(dis2.status, "dismissed");
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_bulk_approve_and_reject_suggestions() {
+        let (db, db_dir) = test_auth_db("sugg_bulk");
+
+        let s1 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Bulk 1",
+                "Rationale",
+                0.8,
+                &[],
+                None,
+                Some("bulk1"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let s2 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Bulk 2",
+                "Rationale",
+                0.8,
+                &[],
+                None,
+                Some("bulk2"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        // Bulk approve s1, s2, and invalid id 99999
+        let bulk_app = bulk_approve_suggestions_inner(&db, &[s1.id, s2.id, 99999]).unwrap();
+        assert_eq!(bulk_app.approved_ids, vec![s1.id, s2.id]);
+        assert_eq!(bulk_app.failed_ids, vec![99999]);
+        assert_eq!(bulk_app.errors.len(), 1);
+        assert!(bulk_app.errors[0].contains("Suggestion #99999 not found"));
+
+        // Verify status
+        assert_eq!(
+            db.get_organization_suggestion(s1.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "approved"
+        );
+        assert_eq!(
+            db.get_organization_suggestion(s2.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "approved"
+        );
+
+        // Bulk reject
+        let s3 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Bulk 3",
+                "Rationale",
+                0.8,
+                &[],
+                None,
+                Some("bulk3"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let s4 = db
+            .insert_organization_suggestion(
+                "suggest_tag",
+                "Bulk 4",
+                "Rationale",
+                0.8,
+                &[],
+                None,
+                Some("bulk4"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let bulk_rej = bulk_reject_suggestions_inner(&db, &[s3.id, s4.id]).unwrap();
+        assert_eq!(bulk_rej.rejected_ids, vec![s3.id, s4.id]);
+        assert!(bulk_rej.failed_ids.is_empty());
+
+        assert_eq!(
+            db.get_organization_suggestion(s3.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "rejected"
+        );
+        assert_eq!(
+            db.get_organization_suggestion(s4.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "rejected"
+        );
+
         let _ = fs::remove_dir_all(&db_dir);
     }
 }
