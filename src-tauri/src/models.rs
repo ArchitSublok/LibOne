@@ -217,3 +217,32 @@ pub struct LibraryExport {
     pub file_tags: Vec<FileTagLink>,
     pub file_notes: Vec<FileNote>,
 }
+
+// ── Phase 3: Suggestions & Duplicates ────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrganizationSuggestion {
+    pub id: i64,
+    pub suggestion_type: String,
+    pub title: String,
+    pub rationale: String,
+    pub confidence: f64,
+    pub status: String,
+    pub created_at: String,
+    pub reviewed_at: Option<String>,
+    pub affected_file_ids: Vec<i64>,
+    pub suggested_tag_id: Option<i64>,
+    pub suggested_tag_name: Option<String>,
+    pub suggested_collection_id: Option<i64>,
+    pub suggested_collection_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DuplicateGroup {
+    pub id: i64,
+    pub match_type: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub status: String,
+    pub file_ids: Vec<i64>,
+}

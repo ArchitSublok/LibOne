@@ -1,9 +1,9 @@
 //! The local SQLite repository. SQL is deliberately contained here, away from Tauri commands.
 
 use crate::models::{
-    Collection, ExportSummary, FileCollectionLink, FileDetail, FileNote, FileQueryParams,
-    FileTagLink, IndexedFile, LibraryExport, NewIndexedFile, PaginatedFiles, ScanRoot, ScanStats,
-    Tag, EXPORT_FORMAT_VERSION,
+    Collection, DuplicateGroup, ExportSummary, FileCollectionLink, FileDetail, FileNote,
+    FileQueryParams, FileTagLink, IndexedFile, LibraryExport, NewIndexedFile,
+    OrganizationSuggestion, PaginatedFiles, ScanRoot, ScanStats, Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -1039,6 +1039,321 @@ impl Database {
         let conn = self.open()?;
         conn.execute("DELETE FROM file_notes WHERE id=?1", params![note_id])?;
         Ok(())
+    }
+
+    // ── Phase 3: Suggestions & Duplicates ────────────────────────────────────
+
+    pub fn insert_organization_suggestion(
+        &self,
+        suggestion_type: &str,
+        title: &str,
+        rationale: &str,
+        confidence: f64,
+        file_ids: &[i64],
+        suggested_tag_id: Option<i64>,
+        suggested_tag_name: Option<&str>,
+        suggested_collection_id: Option<i64>,
+        suggested_collection_name: Option<&str>,
+    ) -> Result<OrganizationSuggestion> {
+        let mut conn = self.open()?;
+        let tx = conn.transaction()?;
+        let ts = now();
+        let clamped_conf = confidence.clamp(0.0, 1.0);
+
+        tx.execute(
+            "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+            params![suggestion_type.trim(), title.trim(), rationale.trim(), clamped_conf, ts],
+        )?;
+        let id = tx.last_insert_rowid();
+
+        for &fid in file_ids {
+            tx.execute(
+                "INSERT INTO suggestion_files (suggestion_id, file_id) VALUES (?1, ?2)
+                 ON CONFLICT(suggestion_id, file_id) DO NOTHING",
+                params![id, fid],
+            )?;
+        }
+
+        if suggested_tag_id.is_some() || suggested_tag_name.is_some() {
+            tx.execute(
+                "INSERT INTO suggestion_tags (suggestion_id, tag_id_nullable, suggested_name_nullable)
+                 VALUES (?1, ?2, ?3)",
+                params![id, suggested_tag_id, suggested_tag_name.map(|n| n.trim())],
+            )?;
+        }
+
+        if suggested_collection_id.is_some() || suggested_collection_name.is_some() {
+            tx.execute(
+                "INSERT INTO suggestion_collections (suggestion_id, collection_id_nullable, suggested_name_nullable)
+                 VALUES (?1, ?2, ?3)",
+                params![id, suggested_collection_id, suggested_collection_name.map(|n| n.trim())],
+            )?;
+        }
+
+        tx.commit()?;
+
+        self.get_organization_suggestion(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn get_organization_suggestion(&self, id: i64) -> Result<Option<OrganizationSuggestion>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, suggestion_type, title, rationale, confidence, status, created_at, reviewed_at
+             FROM organization_suggestions WHERE id=?1",
+        )?;
+        let suggestion = stmt
+            .query_row(params![id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, f64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .optional()?;
+
+        let (id, suggestion_type, title, rationale, confidence, status, created_at, reviewed_at) =
+            match suggestion {
+                Some(s) => s,
+                None => return Ok(None),
+            };
+
+        let mut files_stmt = conn.prepare(
+            "SELECT file_id FROM suggestion_files WHERE suggestion_id=?1 ORDER BY file_id ASC",
+        )?;
+        let affected_file_ids: Vec<i64> = files_stmt
+            .query_map(params![id], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+
+        let mut tag_stmt = conn.prepare(
+            "SELECT tag_id_nullable, suggested_name_nullable FROM suggestion_tags WHERE suggestion_id=?1 LIMIT 1",
+        )?;
+        let tag_info: Option<(Option<i64>, Option<String>)> = tag_stmt
+            .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let (suggested_tag_id, suggested_tag_name) = match tag_info {
+            Some((tid, tname)) => (tid, tname),
+            None => (None, None),
+        };
+
+        let mut col_stmt = conn.prepare(
+            "SELECT collection_id_nullable, suggested_name_nullable FROM suggestion_collections WHERE suggestion_id=?1 LIMIT 1",
+        )?;
+        let col_info: Option<(Option<i64>, Option<String>)> = col_stmt
+            .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let (suggested_collection_id, suggested_collection_name) = match col_info {
+            Some((cid, cname)) => (cid, cname),
+            None => (None, None),
+        };
+
+        Ok(Some(OrganizationSuggestion {
+            id,
+            suggestion_type,
+            title,
+            rationale,
+            confidence,
+            status,
+            created_at,
+            reviewed_at,
+            affected_file_ids,
+            suggested_tag_id,
+            suggested_tag_name,
+            suggested_collection_id,
+            suggested_collection_name,
+        }))
+    }
+
+    pub fn list_organization_suggestions(
+        &self,
+        status_filter: Option<&str>,
+        type_filter: Option<&str>,
+    ) -> Result<Vec<OrganizationSuggestion>> {
+        let conn = self.open()?;
+        let mut sql = "SELECT id FROM organization_suggestions WHERE 1=1".to_string();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+
+        if let Some(st) = status_filter.filter(|s| !s.trim().is_empty() && *s != "all") {
+            sql.push_str(" AND status = ?");
+            values.push(Box::new(st.trim().to_lowercase()));
+        }
+
+        if let Some(tf) = type_filter.filter(|t| !t.trim().is_empty() && *t != "all") {
+            sql.push_str(" AND suggestion_type = ?");
+            values.push(Box::new(tf.trim().to_string()));
+        }
+
+        sql.push_str(" ORDER BY confidence DESC, id DESC");
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let ids: Vec<i64> = stmt
+            .query_map(refs.as_slice(), |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+
+        let mut list = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(s) = self.get_organization_suggestion(id)? {
+                list.push(s);
+            }
+        }
+        Ok(list)
+    }
+
+    pub fn update_suggestion_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.open()?;
+        let ts = now();
+        let rows = conn.execute(
+            "UPDATE organization_suggestions SET status=?1, reviewed_at=?2 WHERE id=?3",
+            params![status.trim(), ts, id],
+        )?;
+        if rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
+    pub fn clear_pending_organization_suggestions(&self) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "DELETE FROM organization_suggestions WHERE status='pending'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_duplicate_group(
+        &self,
+        match_type: &str,
+        confidence: f64,
+        file_ids: &[i64],
+    ) -> Result<DuplicateGroup> {
+        let mut conn = self.open()?;
+        let tx = conn.transaction()?;
+        let ts = now();
+        let clamped_conf = confidence.clamp(0.0, 1.0);
+
+        tx.execute(
+            "INSERT INTO duplicate_groups (match_type, confidence, created_at, status)
+             VALUES (?1, ?2, ?3, 'pending')",
+            params![match_type.trim(), clamped_conf, ts],
+        )?;
+        let id = tx.last_insert_rowid();
+
+        for &fid in file_ids {
+            tx.execute(
+                "INSERT INTO duplicate_group_files (group_id, file_id) VALUES (?1, ?2)
+                 ON CONFLICT(group_id, file_id) DO NOTHING",
+                params![id, fid],
+            )?;
+        }
+
+        tx.commit()?;
+
+        self.get_duplicate_group(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn get_duplicate_group(&self, id: i64) -> Result<Option<DuplicateGroup>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, match_type, confidence, created_at, status FROM duplicate_groups WHERE id=?1",
+        )?;
+        let group = stmt
+            .query_row(params![id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, f64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .optional()?;
+
+        let (id, match_type, confidence, created_at, status) = match group {
+            Some(g) => g,
+            None => return Ok(None),
+        };
+
+        let mut files_stmt = conn.prepare(
+            "SELECT file_id FROM duplicate_group_files WHERE group_id=?1 ORDER BY file_id ASC",
+        )?;
+        let file_ids: Vec<i64> = files_stmt
+            .query_map(params![id], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+
+        Ok(Some(DuplicateGroup {
+            id,
+            match_type,
+            confidence,
+            created_at,
+            status,
+            file_ids,
+        }))
+    }
+
+    pub fn list_duplicate_groups(
+        &self,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<DuplicateGroup>> {
+        let conn = self.open()?;
+        let mut sql = "SELECT id FROM duplicate_groups WHERE 1=1".to_string();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+
+        if let Some(st) = status_filter.filter(|s| !s.trim().is_empty() && *s != "all") {
+            sql.push_str(" AND status = ?");
+            values.push(Box::new(st.trim().to_lowercase()));
+        }
+
+        sql.push_str(" ORDER BY confidence DESC, id DESC");
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let ids: Vec<i64> = stmt
+            .query_map(refs.as_slice(), |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+
+        let mut list = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(g) = self.get_duplicate_group(id)? {
+                list.push(g);
+            }
+        }
+        Ok(list)
+    }
+
+    pub fn update_duplicate_group_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.open()?;
+        let rows = conn.execute(
+            "UPDATE duplicate_groups SET status=?1 WHERE id=?2",
+            params![status.trim(), id],
+        )?;
+        if rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
+    pub fn clear_pending_duplicate_groups(&self) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute("DELETE FROM duplicate_groups WHERE status='pending'", [])?;
+        Ok(())
+    }
+
+    /// Generates local organization suggestions and duplicate groups, persisting them into SQLite.
+    pub fn generate_and_store_suggestions(
+        &self,
+        options: Option<crate::analyzer::SuggestionOptions>,
+    ) -> Result<(usize, usize)> {
+        let engine = crate::analyzer::SuggestionEngine::new(options.unwrap_or_default());
+        engine.run_and_persist(self)
     }
 }
 
