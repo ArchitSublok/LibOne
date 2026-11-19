@@ -9,7 +9,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Upper bound for tag IDs accepted by a single file query. Keeps the generated
 /// SQL below SQLite's variable limit even for an untrusted request.
@@ -142,6 +142,69 @@ impl Database {
             tx.execute(
                 "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
                 params![3, now()],
+            )?;
+        }
+
+        if current < 4 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS organization_suggestions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    suggestion_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    rationale TEXT NOT NULL,
+                    confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'dismissed')),
+                    created_at TEXT NOT NULL,
+                    reviewed_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS suggestion_files (
+                    suggestion_id INTEGER NOT NULL REFERENCES organization_suggestions(id) ON DELETE CASCADE,
+                    file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                    PRIMARY KEY (suggestion_id, file_id)
+                );
+                CREATE TABLE IF NOT EXISTS suggestion_tags (
+                    suggestion_id INTEGER NOT NULL REFERENCES organization_suggestions(id) ON DELETE CASCADE,
+                    tag_id_nullable INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+                    suggested_name_nullable TEXT,
+                    CHECK (tag_id_nullable IS NOT NULL OR suggested_name_nullable IS NOT NULL)
+                );
+                CREATE TABLE IF NOT EXISTS suggestion_collections (
+                    suggestion_id INTEGER NOT NULL REFERENCES organization_suggestions(id) ON DELETE CASCADE,
+                    collection_id_nullable INTEGER REFERENCES collections(id) ON DELETE CASCADE,
+                    suggested_name_nullable TEXT,
+                    CHECK (collection_id_nullable IS NOT NULL OR suggested_name_nullable IS NOT NULL)
+                );
+                CREATE TABLE IF NOT EXISTS duplicate_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    match_type TEXT NOT NULL,
+                    confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'dismissed'))
+                );
+                CREATE TABLE IF NOT EXISTS duplicate_group_files (
+                    group_id INTEGER NOT NULL REFERENCES duplicate_groups(id) ON DELETE CASCADE,
+                    file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                    PRIMARY KEY (group_id, file_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_suggestions_status ON organization_suggestions(status);
+                CREATE INDEX IF NOT EXISTS idx_org_suggestions_type ON organization_suggestions(suggestion_type);
+                CREATE INDEX IF NOT EXISTS idx_suggestion_files_file ON suggestion_files(file_id);
+                CREATE INDEX IF NOT EXISTS idx_suggestion_tags_suggestion ON suggestion_tags(suggestion_id);
+                CREATE INDEX IF NOT EXISTS idx_suggestion_tags_tag ON suggestion_tags(tag_id_nullable);
+                CREATE INDEX IF NOT EXISTS idx_suggestion_collections_suggestion ON suggestion_collections(suggestion_id);
+                CREATE INDEX IF NOT EXISTS idx_suggestion_collections_col ON suggestion_collections(collection_id_nullable);
+                CREATE INDEX IF NOT EXISTS idx_duplicate_groups_status ON duplicate_groups(status);
+                CREATE INDEX IF NOT EXISTS idx_duplicate_group_files_file ON duplicate_group_files(file_id);",
+            )?;
+            tx.execute(
+                "INSERT INTO library_metadata(id,schema_version,library_created_at,updated_at)
+                 VALUES(1, 4, ?1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET schema_version=4, updated_at=?1;",
+                params![now()],
+            )?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+                params![4, now()],
             )?;
         }
 
@@ -1103,7 +1166,7 @@ mod tests {
             c.query_row("SELECT schema_version FROM library_metadata", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         drop(c);
         std::fs::remove_dir_all(p).unwrap()
@@ -1114,7 +1177,7 @@ mod tests {
         let (d, p) = db();
         let conn = d.open().unwrap();
 
-        // 1. Verify schema version and migrations applied
+        // 1. Verify schema version and migrations applied (at least v3)
         let schema_ver: i64 = conn
             .query_row(
                 "SELECT schema_version FROM library_metadata WHERE id=1",
@@ -1122,7 +1185,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(schema_ver, 3);
+        assert!(schema_ver >= 3);
 
         let versions: Vec<i64> = conn
             .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
@@ -1131,7 +1194,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert!(versions.contains(&1) && versions.contains(&2) && versions.contains(&3));
 
         // 2. Verify all new Phase 2 tables exist
         for table in &[
@@ -1370,7 +1433,7 @@ mod tests {
         let database = Database::new(&p).unwrap();
         let conn = database.open().unwrap();
 
-        // 1. Verify schema version was updated from 2 to 3
+        // 1. Verify schema version was updated from 2 to 4
         let schema_ver: i64 = conn
             .query_row(
                 "SELECT schema_version FROM library_metadata WHERE id=1",
@@ -1378,9 +1441,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(schema_ver, 3);
+        assert_eq!(schema_ver, 4);
 
-        // 2. Verify schema_migrations now includes 1, 2, and 3
+        // 2. Verify schema_migrations now includes 1, 2, 3, and 4
         let versions: Vec<i64> = conn
             .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
             .unwrap()
@@ -1388,7 +1451,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(versions, vec![1, 2, 3, 4]);
 
         // 3. Verify original Phase 1 scan root is completely intact
         let root = database
@@ -1450,6 +1513,415 @@ mod tests {
             )
             .unwrap();
         assert_eq!(note_text, "Reviewed by counsel");
+
+        // 6. Verify new Phase 3 tables can be used with the existing Phase 1 file
+        conn.execute(
+            "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+             VALUES ('suggest_collection', 'Group Contracts', 'Found related files', 0.95, 'pending', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let sugg_id: i64 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO suggestion_files (suggestion_id, file_id) VALUES (?1, 100)",
+            params![sugg_id],
+        )
+        .unwrap();
+
+        drop(conn);
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn migration_v4_fresh_database_structure_and_constraints() {
+        let (d, p) = db();
+        let conn = d.open().unwrap();
+
+        // 1. Verify schema version and migrations applied
+        let schema_ver: i64 = conn
+            .query_row(
+                "SELECT schema_version FROM library_metadata WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_ver, 4);
+
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(versions, vec![1, 2, 3, 4]);
+
+        // 2. Verify all Phase 3 tables exist
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name ASC")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(tables.contains(&"organization_suggestions".to_string()));
+        assert!(tables.contains(&"suggestion_files".to_string()));
+        assert!(tables.contains(&"suggestion_tags".to_string()));
+        assert!(tables.contains(&"suggestion_collections".to_string()));
+        assert!(tables.contains(&"duplicate_groups".to_string()));
+        assert!(tables.contains(&"duplicate_group_files".to_string()));
+
+        // 3. Verify status constraint on organization_suggestions
+        for valid_status in ["pending", "approved", "rejected", "dismissed"] {
+            conn.execute(
+                "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+                 VALUES ('suggest_tag', 'Tag', 'Rationale', 0.85, ?1, datetime('now'))",
+                params![valid_status],
+            )
+            .unwrap();
+        }
+        let invalid_status = conn.execute(
+            "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+             VALUES ('suggest_tag', 'Tag', 'Rationale', 0.85, 'invalid_status', datetime('now'))",
+            [],
+        );
+        assert!(
+            invalid_status.is_err(),
+            "Expected invalid suggestion status to fail"
+        );
+
+        // 4. Verify confidence range constraint (0.0 to 1.0)
+        let invalid_conf_high = conn.execute(
+            "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+             VALUES ('suggest_tag', 'Tag', 'Rationale', 1.5, 'pending', datetime('now'))",
+            [],
+        );
+        assert!(
+            invalid_conf_high.is_err(),
+            "Expected confidence > 1.0 to fail"
+        );
+        let invalid_conf_low = conn.execute(
+            "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+             VALUES ('suggest_tag', 'Tag', 'Rationale', -0.1, 'pending', datetime('now'))",
+            [],
+        );
+        assert!(
+            invalid_conf_low.is_err(),
+            "Expected confidence < 0.0 to fail"
+        );
+
+        // 5. Verify status constraint on duplicate_groups
+        for valid_status in ["pending", "approved", "rejected", "dismissed"] {
+            conn.execute(
+                "INSERT INTO duplicate_groups (match_type, confidence, created_at, status)
+                 VALUES ('exact_hash', 1.0, datetime('now'), ?1)",
+                params![valid_status],
+            )
+            .unwrap();
+        }
+        let invalid_dup_status = conn.execute(
+            "INSERT INTO duplicate_groups (match_type, confidence, created_at, status)
+             VALUES ('exact_hash', 1.0, datetime('now'), 'unknown')",
+            [],
+        );
+        assert!(
+            invalid_dup_status.is_err(),
+            "Expected invalid duplicate_group status to fail"
+        );
+
+        // 6. Test foreign keys and cascade on suggestion_files
+        let root = d.add_scan_root(r"C:\Docs", "Docs").unwrap();
+        let file = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: r"C:\Docs\test.pdf".into(),
+                normalized_path: normalize(r"C:\Docs\test.pdf"),
+                file_name: "test.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 4096,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let sugg_id: i64 = conn
+            .query_row("SELECT id FROM organization_suggestions LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO suggestion_files (suggestion_id, file_id) VALUES (?1, ?2)",
+            params![sugg_id, file.id],
+        )
+        .unwrap();
+
+        // Duplicate pair must fail
+        let dup_sf = conn.execute(
+            "INSERT INTO suggestion_files (suggestion_id, file_id) VALUES (?1, ?2)",
+            params![sugg_id, file.id],
+        );
+        assert!(
+            dup_sf.is_err(),
+            "Expected duplicate (suggestion_id, file_id) to fail"
+        );
+
+        // Cascade delete on suggestion deletion
+        conn.execute(
+            "DELETE FROM organization_suggestions WHERE id=?1",
+            params![sugg_id],
+        )
+        .unwrap();
+        let sf_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM suggestion_files WHERE suggestion_id=?1",
+                params![sugg_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sf_count, 0, "suggestion_files should cascade delete");
+
+        // The original indexed file must remain untouched
+        assert!(d.get_indexed_file(file.id).unwrap().is_some());
+
+        // 7. Verify duplicate_groups and duplicate_group_files constraints
+        let group_id: i64 = conn
+            .query_row("SELECT id FROM duplicate_groups LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO duplicate_group_files (group_id, file_id) VALUES (?1, ?2)",
+            params![group_id, file.id],
+        )
+        .unwrap();
+
+        // Duplicate pair in duplicate_group_files must fail
+        let dup_dgf = conn.execute(
+            "INSERT INTO duplicate_group_files (group_id, file_id) VALUES (?1, ?2)",
+            params![group_id, file.id],
+        );
+        assert!(
+            dup_dgf.is_err(),
+            "Expected duplicate (group_id, file_id) to fail"
+        );
+
+        // Deleting duplicate_group cascades to duplicate_group_files
+        conn.execute(
+            "DELETE FROM duplicate_groups WHERE id=?1",
+            params![group_id],
+        )
+        .unwrap();
+        let dgf_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM duplicate_group_files WHERE group_id=?1",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dgf_count, 0, "duplicate_group_files should cascade delete");
+
+        // The original indexed file must remain untouched
+        assert!(d.get_indexed_file(file.id).unwrap().is_some());
+
+        drop(conn);
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn migration_from_phase2_database_preserves_all_data() {
+        let p = std::env::temp_dir().join(format!(
+            "libone-p2-migration-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        let db_file = p.join("libone.db");
+
+        // Manually build an exact Phase 2 (schema version 3) database with records
+        {
+            let conn = Connection::open(&db_file).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+                 INSERT INTO schema_migrations VALUES (1, '2026-11-13T00:00:00Z');
+                 INSERT INTO schema_migrations VALUES (2, '2026-11-13T00:01:00Z');
+                 INSERT INTO schema_migrations VALUES (3, '2026-11-13T00:02:00Z');
+
+                 CREATE TABLE scan_roots (
+                     id INTEGER PRIMARY KEY,
+                     absolute_path TEXT NOT NULL,
+                     normalized_path TEXT NOT NULL UNIQUE,
+                     display_name TEXT NOT NULL,
+                     enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),
+                     created_at TEXT NOT NULL,
+                     last_scan_started_at TEXT,
+                     last_scan_completed_at TEXT,
+                     last_scan_status TEXT NOT NULL DEFAULT 'never_scanned'
+                 );
+
+                 CREATE TABLE indexed_files (
+                     id INTEGER PRIMARY KEY,
+                     scan_root_id INTEGER NOT NULL REFERENCES scan_roots(id) ON DELETE RESTRICT,
+                     absolute_path TEXT NOT NULL,
+                     normalized_path TEXT NOT NULL UNIQUE,
+                     file_name TEXT NOT NULL,
+                     extension TEXT NOT NULL,
+                     size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),
+                     modified_at TEXT,
+                     created_at_if_available TEXT,
+                     discovered_at TEXT NOT NULL,
+                     last_seen_at TEXT NOT NULL,
+                     content_hash_nullable TEXT,
+                     file_id_nullable TEXT,
+                     status TEXT NOT NULL
+                 );
+
+                 CREATE TABLE library_metadata (
+                     id INTEGER PRIMARY KEY CHECK(id=1),
+                     schema_version INTEGER NOT NULL,
+                     library_created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+
+                 INSERT INTO library_metadata VALUES (1, 3, '2026-11-13T00:00:00Z', '2026-11-13T00:02:00Z');
+
+                 CREATE TABLE collections (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                     description_nullable TEXT,
+                     color_nullable TEXT,
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+
+                 CREATE TABLE tags (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                     color_nullable TEXT,
+                     created_at TEXT NOT NULL
+                 );
+
+                 CREATE TABLE file_collections (
+                     file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                     collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                     created_at TEXT NOT NULL,
+                     PRIMARY KEY (file_id, collection_id)
+                 );
+
+                 CREATE TABLE file_tags (
+                     file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                     created_at TEXT NOT NULL,
+                     PRIMARY KEY (file_id, tag_id)
+                 );
+
+                 CREATE TABLE file_notes (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                     note_text TEXT NOT NULL,
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+
+                 INSERT INTO scan_roots (id, absolute_path, normalized_path, display_name, enabled, created_at, last_scan_status)
+                 VALUES (20, 'E:\\Work', 'e:\\work', 'Work Folder', 1, '2026-11-14T00:00:00Z', 'completed');
+
+                 INSERT INTO indexed_files (id, scan_root_id, absolute_path, normalized_path, file_name, extension, size_bytes, modified_at, discovered_at, last_seen_at, content_hash_nullable, file_id_nullable, status)
+                 VALUES (200, 20, 'E:\\Work\\Report.pdf', 'e:\\work\\report.pdf', 'Report.pdf', 'pdf', 512000, '2026-11-14T10:00:00Z', '2026-11-14T10:00:00Z', '2026-11-14T10:00:00Z', 'hash_abc_123', 'vol:idx', 'indexed');
+
+                 INSERT INTO collections (id, name, description_nullable, color_nullable, created_at, updated_at)
+                 VALUES (5, 'Projects', 'Current active projects', '#10b981', '2026-11-14T10:05:00Z', '2026-11-14T10:05:00Z');
+
+                 INSERT INTO tags (id, name, color_nullable, created_at)
+                 VALUES (8, 'urgent', '#ef4444', '2026-11-14T10:06:00Z');
+
+                 INSERT INTO file_collections (file_id, collection_id, created_at)
+                 VALUES (200, 5, '2026-11-14T10:07:00Z');
+
+                 INSERT INTO file_tags (file_id, tag_id, created_at)
+                 VALUES (200, 8, '2026-11-14T10:08:00Z');
+
+                 INSERT INTO file_notes (id, file_id, note_text, created_at, updated_at)
+                 VALUES (12, 200, 'Initial draft note', '2026-11-14T10:09:00Z', '2026-11-14T10:09:00Z');
+                ",
+            )
+            .unwrap();
+        }
+
+        // Open through LibOne Database::new, which runs migrate()
+        let database = Database::new(&p).unwrap();
+        let conn = database.open().unwrap();
+
+        // 1. Verify schema version was bumped from 3 to 4
+        let schema_ver: i64 = conn
+            .query_row(
+                "SELECT schema_version FROM library_metadata WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_ver, 4);
+
+        // 2. Verify schema_migrations has 1, 2, 3, 4
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(versions, vec![1, 2, 3, 4]);
+
+        // 3. Verify scan roots, files, collections, tags, links, and notes are preserved intact
+        let root = database.get_scan_root(20).unwrap().expect("Root 20");
+        assert_eq!(root.display_name, "Work Folder");
+
+        let file = database.get_indexed_file(200).unwrap().expect("File 200");
+        assert_eq!(file.file_name, "Report.pdf");
+
+        let col = database.get_collection(5).unwrap().expect("Collection 5");
+        assert_eq!(col.name, "Projects");
+
+        let tag = database.get_tag(8).unwrap().expect("Tag 8");
+        assert_eq!(tag.name, "urgent");
+
+        let note = database.get_file_note(12).unwrap().expect("Note 12");
+        assert_eq!(note.note_text, "Initial draft note");
+
+        // 4. Verify Phase 3 suggestions can link to existing Phase 1/2 records
+        conn.execute(
+            "INSERT INTO organization_suggestions (suggestion_type, title, rationale, confidence, status, created_at)
+             VALUES ('suggest_tag', 'Auto Tag urgent', 'High priority file', 0.9, 'pending', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let sugg_id: i64 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO suggestion_files (suggestion_id, file_id) VALUES (?1, 200)",
+            params![sugg_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO suggestion_tags (suggestion_id, tag_id_nullable, suggested_name_nullable)
+             VALUES (?1, 8, 'urgent')",
+            params![sugg_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO suggestion_collections (suggestion_id, collection_id_nullable, suggested_name_nullable)
+             VALUES (?1, 5, 'Projects')",
+            params![sugg_id],
+        )
+        .unwrap();
 
         drop(conn);
         std::fs::remove_dir_all(p).unwrap();
