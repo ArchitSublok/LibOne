@@ -28,6 +28,7 @@ import {
   Tag as TagIcon,
   Tags,
   SquareCheck,
+  Sparkles,
 } from "lucide-react";
 import {
   AppInfo,
@@ -55,6 +56,7 @@ import {
   listenLibraryUpdated,
   listenWatcherStatus,
   listCollections,
+  listPendingSuggestions,
   listScanRoots,
   listTags,
   openOriginalFile,
@@ -74,6 +76,7 @@ import { TagModal } from "./components/TagModal";
 import { OrganizationPanel } from "./components/OrganizationPanel";
 import { BulkAssignModal } from "./components/BulkAssignModal";
 import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
+import { SuggestionsView } from "./components/SuggestionsView";
 import { useDebouncedValue } from "./hooks/useDebouncedValue";
 import { useResetPageOnFilters } from "./hooks/useResetPageOnFilters";
 import "./App.css";
@@ -165,6 +168,19 @@ export const App: React.FC = () => {
   const [copiedExport, setCopiedExport] = useState(false);
   const [exportStatusText, setExportStatusText] = useState<string | null>(null);
 
+  // ── Phase 3 suggestions state ─────────────────────────────────────────────
+  const [currentView, setCurrentView] = useState<"library" | "suggestions">("library");
+  const [pendingSuggestionCount, setPendingSuggestionCount] = useState<number>(0);
+
+  const refreshPendingSuggestionCount = async () => {
+    try {
+      const pending = await listPendingSuggestions();
+      setPendingSuggestionCount(pending.length);
+    } catch {
+      // silent fallback
+    }
+  };
+
   // ── Bootstrap ─────────────────────────────────────────────────────────────
   useEffect(() => {
     getAppInfo()
@@ -173,6 +189,7 @@ export const App: React.FC = () => {
     loadRoots();
     loadExtensions();
     loadOrganization();
+    refreshPendingSuggestionCount();
 
     // Initial watcher status
     getWatcherStatus()
@@ -193,6 +210,7 @@ export const App: React.FC = () => {
       loadExtensions();
       loadFiles();
       loadRoots();
+      refreshPendingSuggestionCount();
     }).then((fn) => {
       unlistenUpdated = fn;
     });
@@ -853,6 +871,29 @@ export const App: React.FC = () => {
 
         <div className="header-actions">
           <button
+            className={`btn ${currentView === "suggestions" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setCurrentView(currentView === "suggestions" ? "library" : "suggestions")}
+            title="Review local organization suggestions"
+          >
+            <Sparkles size={14} /> Suggestions
+            {pendingSuggestionCount > 0 && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  padding: "1px 6px",
+                  borderRadius: "9999px",
+                  background: currentView === "suggestions" ? "rgba(255, 255, 255, 0.25)" : "var(--primary-color, #2563eb)",
+                  color: "#fff",
+                  fontSize: "0.72rem",
+                  fontWeight: 600,
+                }}
+              >
+                {pendingSuggestionCount}
+              </span>
+            )}
+          </button>
+
+          <button
             className="btn btn-secondary"
             onClick={() => {
               setScanScreenRootId(selectedRootId ?? (roots[0]?.id ?? null));
@@ -892,7 +933,7 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* ── Body grid or Scan Screen ────────────────────────────────────────── */}
+      {/* ── Body grid or Scan Screen or Suggestions View ─────────────────────── */}
       {scanScreenOpen ? (
         <ScanScreen
           roots={roots}
@@ -902,11 +943,27 @@ export const App: React.FC = () => {
             loadRoots();
             loadExtensions();
             loadFiles();
+            refreshPendingSuggestionCount();
           }}
           onScanCompleted={() => {
             loadRoots();
             loadExtensions();
             loadFiles();
+            refreshPendingSuggestionCount();
+          }}
+        />
+      ) : currentView === "suggestions" ? (
+        <SuggestionsView
+          onBackToLibrary={() => {
+            setCurrentView("library");
+            loadFiles();
+            loadRoots();
+            loadOrganization();
+            refreshPendingSuggestionCount();
+          }}
+          onSuggestionsChanged={() => {
+            refreshPendingSuggestionCount();
+            loadOrganization();
           }}
         />
       ) : (
