@@ -228,3 +228,11 @@ export interface BulkSuggestionResult {
   errors: string[];
 }
 
+export interface LocalAiStatus {
+  is_available: boolean;
+  provider_name: string;
+  status_message: string;
+  model_name: string | null;
+  allows_network: boolean;
+}
+

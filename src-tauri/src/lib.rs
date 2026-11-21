@@ -3,6 +3,7 @@ use tauri::Manager;
 pub mod analyzer;
 pub mod commands;
 pub mod db;
+pub mod intelligence;
 pub mod models;
 pub mod scanner;
 pub mod validate;
@@ -111,6 +112,7 @@ pub fn run() {
             commands::bulk_approve_suggestions,
             commands::bulk_reject_suggestions,
             commands::generate_suggestions,
+            commands::get_local_ai_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibOne application");

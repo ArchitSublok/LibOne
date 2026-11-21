@@ -15,6 +15,7 @@ import {
   FileTagLink,
   IndexedFile,
   LibraryExport,
+  LocalAiStatus,
   OrganizationSuggestion,
   PaginatedFiles,
   ScanOptions,
@@ -1593,6 +1594,19 @@ export async function generateSuggestions(): Promise<[number, number]> {
     return await invoke<[number, number]>("generate_suggestions");
   }
   return [mockSuggestions.length, mockDuplicateGroups.length];
+}
+
+export async function getLocalAiStatus(): Promise<LocalAiStatus> {
+  if (isTauriEnvironment()) {
+    return await invoke<LocalAiStatus>("get_local_ai_status");
+  }
+  return {
+    is_available: false,
+    provider_name: "DisabledLocalProvider",
+    status_message: "Local AI is not configured",
+    model_name: null,
+    allows_network: false,
+  };
 }
 
 

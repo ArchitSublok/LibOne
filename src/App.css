@@ -2563,6 +2563,53 @@ body {
   margin: 0;
 }
 
+/* Local AI Status Notice (Shows when AI is unavailable/not configured) */
+.local-ai-status-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(148, 163, 184, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.local-ai-status-notice__icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.local-ai-status-notice__content {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.local-ai-status-notice__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-ai-status-notice__header strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.local-ai-badge {
+  font-size: 0.65rem;
+  padding: 1px 6px;
+}
+
+.local-ai-status-notice__content p {
+  color: var(--text-muted);
+  margin: 0;
+}
+
 /* Alert Banners */
 .alert-banner {
   display: flex;

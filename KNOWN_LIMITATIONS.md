@@ -96,3 +96,25 @@ This document transparently records the architectural constraints, platform-spec
 - LibOne does not perform cloud sync, telemetry, account sign-in, AI classification, OCR, or full-text extraction in Phase 2.
 - No shell-based file launching was introduced. Windows file opening uses direct `ShellExecuteW`; Explorer reveal uses a direct `explorer.exe` process with arguments.
 - All production SQL remains in the repository layer (`db.rs`). The frontend and command layer never construct SQL.
+
+---
+
+## 5. Phase 3 Suggestion Engine & Local AI Provider Boundaries
+
+### 5.1 Local AI Interface Only (Disabled by Default)
+- **Trait Definition Only**: LibOne defines an abstract Rust provider trait (`LocalIntelligenceProvider` in `src-tauri/src/intelligence.rs`) as an architectural placeholder for future on-device intelligence.
+- **No AI Enabled or Required**: No machine learning model, weights, neural network runtime, or background inference engine is bundled or active. The default implementation is `DisabledLocalProvider`.
+- **Status Transparency**: Whenever local AI is unavailable, the application UI clearly and explicitly communicates:
+  > **“Local AI is not configured”**
+
+### 5.2 Deterministic Metadata Rules as Default Engine
+- **Pure Metadata Analysis**: All Phase 3 suggestions (duplicate files, likely versions, collection clusters, tag proposals, and stale files) are generated using deterministic rule-based algorithms analyzing local filesystem timestamps, folder names, extensions, file sizes, and NTFS identities.
+- **No Document Content Extraction**: Document payloads, full text, and binary bytes are never parsed, read, or transmitted.
+- **Explicit User Action Required**: Suggestions are never automatically applied. Every metadata modification requires an explicit user click.
+- **Non-Destructive Operations**: Marking a preferred file or approving duplicate/version suggestions assigns SQLite tags and notes only. No files on disk are ever moved, renamed, overwritten, or deleted.
+
+### 5.3 Strict Privacy & Networking Constraints
+- **Zero Network Calls**: Outbound network connections, cloud API calls, and telemetry are strictly forbidden across all intelligence abstractions (`allows_network: false`).
+- **No API Keys or Accounts**: LibOne requires no API tokens, accounts, subscription setups, or external registrations.
+- **No Model Downloads**: The application does not perform automatic or background model downloads.
+- **Code Isolation**: All AI provider structures are quarantined behind the `intelligence.rs` module boundary, ensuring zero impact on core library indexing, searching, or scanning performance.

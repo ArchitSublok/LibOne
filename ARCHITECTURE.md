@@ -345,3 +345,38 @@ Errors from the backend are surfaced in the relevant surface rather than silentl
 - CRUD dialogs show inline error text and keep user input so a failed save can be retried.
 - Delete and bulk-assignment dialogs explain that only LibOne metadata changes.
 - Messages are human-readable but can include technical identifiers (for example `Note #42 not found.` or `Indexed file #7 not found in library.`). See `KNOWN_LIMITATIONS.md`.
+
+---
+
+## 11. Phase 3 Architecture: Metadata Suggestion Engine & Optional Local Provider Boundary
+
+Phase 3 introduces intelligent organization suggestions, duplicate group review, version sequence detection, and stale-file identification, while maintaining LibOne's strict zero-cloud, privacy-first invariants.
+
+### 11.1 Deterministic Metadata Suggestions as Default Engine
+- **Source of Truth**: All suggestions are generated strictly from indexed local filesystem metadata (filenames, parent folder clusters, timestamps, byte sizes, NTFS file identity, SHA-256 hashes, and existing collections/tags).
+- **Zero Document Content Reading**: Document text, body bytes, and binary contents are never loaded or analyzed by the suggestion engine.
+- **Explainability**: Every suggestion carries an explicit human-readable rationale, confidence score (0.0 to 1.0), and pending status.
+- **Non-Destructive Metadata Operations**: Approving duplicate groups, versions, or suggestions updates only LibOne's SQLite metadata (tags, collections, notes). Original files on disk are never moved, renamed, replaced, or deleted.
+
+### 11.2 Optional Local Provider Interface (`LocalIntelligenceProvider`)
+To accommodate future on-device intelligence without compromising privacy, Phase 3 defines an abstract Rust trait isolated in `src-tauri/src/intelligence.rs`:
+
+```rust
+pub trait LocalIntelligenceProvider: Send + Sync {
+    fn is_available(&self) -> bool;
+    fn provider_name(&self) -> &str;
+    fn status_message(&self) -> &str;
+    fn status(&self) -> LocalAiStatus;
+    fn enhance_rationale(&self, context: &str) -> Option<String>;
+}
+```
+
+### 11.3 Strict Architectural Boundaries & Safeguards
+1. **No Network Requests**: The intelligence interface enforces an offline invariant (`allows_network: false`). Outbound HTTP, WebSocket, or socket connections are strictly prohibited.
+2. **No API Keys or Account Setup**: No cloud credentials, API tokens, user authentication, or vendor account configurations are accepted or stored.
+3. **No Document Uploads**: File contents and user documents are never transmitted across process boundaries or off-device.
+4. **No Default Model Downloads**: The application does not silently or automatically download heavy LLM weights, embedding checkpoints, or runtime packages in the background.
+5. **Deterministic Default**: The `DisabledLocalProvider` is the active default implementation. If local AI is not explicitly configured, the UI clearly displays:
+   > **“Local AI is not configured”**  
+   and the application functions seamlessly using purely deterministic metadata analysis.
+6. **Code Isolation**: All intelligence provider interfaces and status structures are strictly segregated in `src-tauri/src/intelligence.rs`, preventing coupling with SQLite persistence or scanner routines.

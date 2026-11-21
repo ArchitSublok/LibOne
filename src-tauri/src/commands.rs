@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::Database;
+use crate::intelligence::{DisabledLocalProvider, LocalAiStatus, LocalIntelligenceProvider};
 use crate::models::{
     AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail,
     FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
@@ -1925,6 +1926,16 @@ pub fn generate_suggestions(state: State<'_, AppState>) -> Result<(usize, usize)
     generate_suggestions_inner(&db)
 }
 
+pub fn get_local_ai_status_inner() -> Result<LocalAiStatus, String> {
+    let provider = DisabledLocalProvider::new();
+    Ok(provider.status())
+}
+
+#[tauri::command]
+pub fn get_local_ai_status() -> Result<LocalAiStatus, String> {
+    get_local_ai_status_inner()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3785,6 +3796,66 @@ mod tests {
 
         let succ_moved = mark_duplicate_preferred_inner(&db, grp.id, f_real.id);
         assert!(succ_moved.is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_local_ai_disabled_and_app_works_without_ai() {
+        // 1. Verify get_local_ai_status_inner returns disabled status
+        let status = get_local_ai_status_inner().unwrap();
+        assert!(!status.is_available);
+        assert_eq!(status.status_message, "Local AI is not configured");
+        assert_eq!(status.provider_name, "DisabledLocalProvider");
+        assert!(status.model_name.is_none());
+        assert!(!status.allows_network, "Network requests must be prohibited");
+
+        // 2. Verify deterministic suggestion generation works completely offline without AI
+        let (db, db_dir) = test_auth_db("no_ai_app_test");
+        let dir = temp_auth_dir("no_ai_app_test");
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Offline Root").unwrap();
+
+        let path1 = dir.join("file1.pdf");
+        let path2 = dir.join("file2.pdf");
+        fs::write(&path1, "Offline doc 1").unwrap();
+        fs::write(&path2, "Offline doc 2").unwrap();
+
+        let _ = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path1.to_str().unwrap().into(),
+                normalized_path: path1.to_str().unwrap().into(),
+                file_name: "file1.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 13,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("offline_hash".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let _ = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path2.to_str().unwrap().into(),
+                normalized_path: path2.to_str().unwrap().into(),
+                file_name: "file2.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 13,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("offline_hash".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // Deterministic engine runs with no error when AI is not configured
+        let gen_res = generate_suggestions_inner(&db);
+        assert!(gen_res.is_ok());
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);

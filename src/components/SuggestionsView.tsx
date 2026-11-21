@@ -20,7 +20,7 @@ import {
   Tag as TagIcon,
   X,
 } from "lucide-react";
-import { DuplicateGroup, IndexedFile, OrganizationSuggestion } from "../types";
+import { DuplicateGroup, IndexedFile, LocalAiStatus, OrganizationSuggestion } from "../types";
 import {
   approveSuggestion,
   bulkApproveSuggestions,
@@ -28,6 +28,7 @@ import {
   dismissSuggestion,
   generateSuggestions,
   getIndexedFileDetail,
+  getLocalAiStatus,
   listDuplicateGroups,
   listOrganizationSuggestions,
   rejectSuggestion,
@@ -82,20 +83,31 @@ export const SuggestionsView: React.FC<Props> = ({
   const [selectedDuplicateGroupId, setSelectedDuplicateGroupId] = useState<number | null>(null);
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
 
+  // Optional local intelligence provider status
+  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus | null>(null);
+
   // ── Load suggestions ───────────────────────────────────────────────────────
   const loadSuggestions = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [data, dGroups] = await Promise.all([
+      const [data, dGroups, aiStat] = await Promise.all([
         listOrganizationSuggestions(
           statusFilter === "all" ? null : statusFilter,
           typeFilter === "all" ? null : typeFilter
         ),
         listDuplicateGroups(statusFilter === "all" ? null : statusFilter),
+        getLocalAiStatus().catch(() => ({
+          is_available: false,
+          provider_name: "DisabledLocalProvider",
+          status_message: "Local AI is not configured",
+          model_name: null,
+          allows_network: false,
+        })),
       ]);
       setSuggestions(data);
       setDuplicateGroups(dGroups);
+      setLocalAiStatus(aiStat);
       if (onSuggestionsChanged) {
         onSuggestionsChanged();
       }
@@ -632,6 +644,21 @@ export const SuggestionsView: React.FC<Props> = ({
             Suggestions are never applied automatically. Approving a suggestion assigns tags,
             creates collections, or records duplicate references purely inside LibOne’s SQLite database.
             Original files on disk are never moved, renamed, altered, or deleted.
+          </p>
+        </div>
+      </div>
+
+      {/* ── Local AI Status Notice (Shows "Local AI is not configured" when unavailable) ── */}
+      <div className="local-ai-status-notice" role="status">
+        <Info size={15} className="local-ai-status-notice__icon" />
+        <div className="local-ai-status-notice__content">
+          <div className="local-ai-status-notice__header">
+            <strong>{localAiStatus?.status_message || "Local AI is not configured"}</strong>
+            <span className="badge badge-secondary local-ai-badge">Offline Metadata Only</span>
+          </div>
+          <p>
+            Deterministic metadata suggestions remain active as the default engine.
+            No cloud APIs, accounts, network requests, document uploads, or model downloads are used.
           </p>
         </div>
       </div>
