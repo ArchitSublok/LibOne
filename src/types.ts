@@ -166,6 +166,16 @@ export interface ExportSummary {
   export_timestamp: string;
 }
 
+export interface SuggestionFileLink {
+  suggestion_id: number;
+  file_id: number;
+}
+
+export interface DuplicateGroupFileLink {
+  group_id: number;
+  file_id: number;
+}
+
 export interface LibraryExport {
   format_version: string;
   app: string;
@@ -179,6 +189,10 @@ export interface LibraryExport {
   file_collections: FileCollectionLink[];
   file_tags: FileTagLink[];
   file_notes: FileNote[];
+  organization_suggestions: OrganizationSuggestion[];
+  suggestion_files: SuggestionFileLink[];
+  duplicate_groups: DuplicateGroup[];
+  duplicate_group_files: DuplicateGroupFileLink[];
 }
 
 // ── Phase 3: Suggestions & Duplicates ────────────────────────────────────────

@@ -252,15 +252,21 @@ When coalescing completes, LibOne determines the safest refresh strategy:
 ## 9. Portable Metadata Export Architecture
 
 ### 9.1 Self-Contained Versioned Snapshot
-- **Format Version `1.1.0`**: Exports carry a dedicated `format_version` attribute conforming to semantic versioning guidelines documented in `EXPORT_FORMAT.md`.
-- **Complete Library Metadata**: Includes top-level application metadata, aggregate summaries (`total_roots`, `total_files`, `total_size_bytes`), complete scan root definitions, and all indexed document file entries with their statuses, timestamps, sizes, NTFS identities, and computed hashes. Phase 2 adds `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`.
-- **Strictly No Document Content**: Under no circumstances does the export engine read or embed file payload bytes. `file_notes[].note_text` is user-authored only; no extracted text, OCR output, or AI-generated content is ever stored or exported. The original documents remain completely untouched on disk.
+- **Format Version `1.2.0`**: Exports carry a dedicated `format_version` attribute conforming to semantic versioning guidelines documented in `EXPORT_FORMAT.md`.
+- **Complete Library Metadata**: Includes top-level application metadata, aggregate summaries (`total_roots`, `total_files`, `total_size_bytes`), complete scan root definitions, and all indexed document file entries with their statuses, timestamps, sizes, NTFS identities, and computed hashes. Phase 2 adds `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`. Phase 3 adds `organization_suggestions`, `suggestion_files`, `duplicate_groups`, and `duplicate_group_files`.
+- **Strictly No Document Content**: Under no circumstances does the export engine read or embed file payload bytes. `file_notes[].note_text` is user-authored only; suggestions and duplicate groups are derived solely from filesystem and database metadata; no extracted text, OCR output, or AI-generated content is ever stored or exported. The original documents remain completely untouched on disk.
 
 ### 9.2 Validation Pipeline
 Before serializing or persisting any export to disk, the backend runs `validate_export`:
 1. **Header Checks**: Asserts that `format_version`, `app`, `version`, and `exported_at` are present and non-empty.
 2. **Integrity Validation**: Verifies `summary.total_roots == scan_roots.len()`, `summary.total_files == files.len()`, `summary.total_size_bytes == sum(files.size_bytes)`, and `summary.export_timestamp == exported_at`.
-3. **Referential Validation**: Collections and tags have unique positive IDs and non-empty names; every link references an existing file and collection/tag; link pairs and note IDs are unique; notes have non-empty text and both timestamps.
+3. **Referential Validation**:
+   - Collections and tags have unique positive IDs and non-empty names.
+   - Every collection/tag link references an existing file and collection/tag; link pairs and note IDs are unique; notes have non-empty text and both timestamps.
+   - Organization suggestions have unique positive IDs, valid non-empty types and titles, confidence in `0.0..=1.0`, valid status (`pending`, `approved`, `rejected`, `dismissed`), non-empty `created_at`, and non-empty `reviewed_at` if set.
+   - Suggestion-file links reference existing suggestions and files with unique pairs.
+   - Duplicate groups have unique positive IDs, valid match types, confidence in `0.0..=1.0`, valid status, and non-empty timestamps.
+   - Duplicate-group-file links reference existing duplicate groups and files with unique pairs.
 4. If any assertion fails, the operation aborts before performing filesystem writes, returning a descriptive error to the UI.
 
 ### 9.3 Atomic Safe-Write Guarantee
@@ -325,9 +331,9 @@ These commands return a descriptive error such as `Action denied: Scan root 'X' 
 
 ### 10.6 Export
 
-- Export format is `1.1.0`: all Phase 1 fields plus `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`.
+- Export format is `1.2.0`: all Phase 1 and Phase 2 fields plus `organization_suggestions`, `suggestion_files`, `duplicate_groups`, and `duplicate_group_files`.
 - The export model is validated before serialization, then written to a sibling `.tmp` file and atomically renamed.
-- Exported notes are user-authored text only. No document bytes, extracted text, OCR output, or AI output is read or written.
+- Exported notes are user-authored text only. Suggestions and duplicate groups are derived solely from filesystem and database metadata. No document bytes, extracted text, OCR output, or external AI output is read or written.
 
 ### 10.7 Security and Scope Boundaries
 

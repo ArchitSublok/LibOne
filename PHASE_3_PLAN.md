@@ -268,3 +268,19 @@ pub struct AnalysisProgress {
 2. **Naming Conventions**: Stem and year extraction relies on standard Latin token delimiters (`_`, `-`, `.`, spaces). Obfuscated names (e.g. `IMG_8492.JPG`) will only cluster by folder, not by semantic tags.
 3. **Language Neutrality**: Default keyword lists are English-centric (`invoice`, `draft`, `report`); users can add custom keyword mappings in settings in future releases.
 4. **No Background Auto-Application**: Users who want hands-off automatic organization must still click "Approve All" or approve individually; this is an intentional safety design decision.
+
+---
+
+## 9. Portable Metadata Export Format v1.2.0
+
+### 9.1 Phase 3 Export Extensions
+The portable export schema has been upgraded from `1.1.0` to `1.2.0` conforming to [`EXPORT_FORMAT.md`](EXPORT_FORMAT.md):
+- **`organization_suggestions`**: Complete record of all generated suggestions, including category/type, title, rationale, confidence score, workflow status (`pending`, `approved`, `rejected`, `dismissed`), `created_at`, and user `reviewed_at` timestamps.
+- **`suggestion_files`**: Referential junction links linking each suggestion to affected indexed files.
+- **`duplicate_groups`**: Detected duplicate clusters with match type (`exact_hash`, `name_and_size`, `file_identity`), confidence score, `created_at`, and review status.
+- **`duplicate_group_files`**: Referential junction links linking duplicate groups to member indexed files.
+
+### 9.2 Invariant Guarantees
+- **Backward Compatibility**: Deserializers treat missing Phase 2 and Phase 3 arrays in legacy exports (`1.0.0` or `1.1.0`) as empty lists (`#[serde(default)]`), ensuring seamless backward compatibility without breaking schema validation.
+- **Metadata-Only Integrity**: Export continues to export purely structured metadata. Original document contents are never opened, read, or exported.
+- **Atomic Persistence & Validation**: The complete export data model is validated in memory (structure, counts, referential integrity, status values) before any filesystem writes. Serialized JSON is written to a temporary sibling file (`.libone-export-<nanos>.tmp`) and atomically renamed.

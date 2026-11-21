@@ -49,9 +49,9 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
    - Targeted incremental refreshes for <= 50 file batches; automatic rescan fallback for directory operations or buffer overflows.
    - Non-intrusive live status indicator pill in the UI header with diagnostics popover.
 
-7. **Portable Metadata Export (Format v1.1.0)**
-   - Complete library snapshot exported to structured, self-contained JSON conforming to [`EXPORT_FORMAT.md`](EXPORT_FORMAT.md). Includes the Phase 2 collections, tags, file links, and user-authored notes arrays.
-   - In-memory pre-write validation asserts schema integrity and summary counts before any disk operations.
+7. **Portable Metadata Export (Format v1.2.0)**
+   - Complete library snapshot exported to structured, self-contained JSON conforming to [`EXPORT_FORMAT.md`](EXPORT_FORMAT.md). Includes Phase 1 scan roots and files, Phase 2 collections, tags, file links, and notes, plus Phase 3 organization suggestions, suggestion-file links, duplicate groups, and duplicate-group files.
+   - In-memory pre-write validation asserts schema integrity, referential consistency, and summary counts before any disk operations.
    - Atomic safe-write: writes to a hidden sibling temporary file (`.libone-export-<nanos>.tmp`) before executing an atomic rename, preventing partial or corrupt files.
    - Native Windows save-file dialog and JSON preview modal with one-click clipboard copying.
 
@@ -127,7 +127,7 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
 ## Documentation Index
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Technical architecture, database schemas, scanner/watcher lifecycle, Phase 2 as-built behavior, and security model.
-- [EXPORT_FORMAT.md](EXPORT_FORMAT.md) — JSON schema definition, example payload, and semantic compatibility rules for metadata exports (v1.1.0).
+- [EXPORT_FORMAT.md](EXPORT_FORMAT.md) — JSON schema definition, example payload, and semantic compatibility rules for metadata exports (v1.2.0).
 - [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) — Platform edge cases, Phase 1/Phase 2 boundaries, and known limitations.
 - [PHASE_1_MANUAL_TEST_PLAN.md](PHASE_1_MANUAL_TEST_PLAN.md) — 10 reproducible Phase 1 manual test cases.
 - [PHASE_2_PLAN.md](PHASE_2_PLAN.md) — Original Phase 2 plan plus the as-built integration review and differences.

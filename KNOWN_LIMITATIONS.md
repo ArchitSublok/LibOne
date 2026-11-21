@@ -82,9 +82,10 @@ This document transparently records the architectural constraints, platform-spec
 
 ### 4.4 Export
 
+- Format version `1.2.0` includes all Phase 1 and Phase 2 metadata plus Phase 3 organization suggestions, suggestion-file links, duplicate groups, duplicate-group files, suggestion workflow statuses, and review timestamps.
 - Exports include user-authored note text. Treat exported JSON files as private data.
-- `summary` keeps only the Phase 1 counters (`total_roots`, `total_files`, `total_size_bytes`); counts for collections/tags/notes must be derived from their arrays.
-- Validation checks structure and referential integrity, but does not require `format_version` to equal the current version. Older `1.x` exports remain readable by design.
+- `summary` keeps only the Phase 1 counters (`total_roots`, `total_files`, `total_size_bytes`); counts for collections, tags, notes, suggestions, and duplicate groups must be derived from their respective arrays.
+- Validation checks structure and referential integrity across all entities, but does not require `format_version` to equal the current version. Older `1.0.0` and `1.1.0` exports remain readable by design (missing Phase 2/3 arrays default to empty lists).
 - Atomic write/rename uses a temporary file in the target directory, so the final target must be on the same filesystem.
 
 ### 4.5 Error Messages

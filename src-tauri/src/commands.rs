@@ -13,9 +13,10 @@ use crate::db::Database;
 use crate::intelligence::{DisabledLocalProvider, LocalAiStatus, LocalIntelligenceProvider};
 use crate::models::{
     AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail,
-    FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
-    IndexedFile, LibraryExport, OrganizationSuggestion, PaginatedFiles, ScanOptions, ScanProgress,
-    ScanRoot, ScanStats, Tag, WatcherOverallStatus, EXPORT_FORMAT_VERSION,
+    DuplicateGroupFileLink, FileCollectionLink, FileComparisonItem, FileDetail, FileNote,
+    FileQueryParams, FileTagLink, IndexedFile, LibraryExport, OrganizationSuggestion,
+    PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats, SuggestionFileLink, Tag,
+    WatcherOverallStatus, EXPORT_FORMAT_VERSION,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -786,6 +787,84 @@ fn validate_export(export: &LibraryExport) -> Result<(), String> {
         }
         if note.created_at.is_empty() || note.updated_at.is_empty() {
             return invalid("file_notes is missing a timestamp");
+        }
+    }
+
+    // Phase 3: Organization suggestions validation
+    let mut suggestion_ids: HashSet<i64> = HashSet::new();
+    for suggestion in &export.organization_suggestions {
+        if suggestion.id <= 0 || !suggestion_ids.insert(suggestion.id) {
+            return invalid("organization_suggestions must have unique positive IDs");
+        }
+        if suggestion.suggestion_type.trim().is_empty() {
+            return invalid("organization_suggestions contains an empty suggestion_type");
+        }
+        if suggestion.title.trim().is_empty() {
+            return invalid("organization_suggestions contains an empty title");
+        }
+        if !(0.0..=1.0).contains(&suggestion.confidence) || suggestion.confidence.is_nan() {
+            return invalid("organization_suggestions confidence must be between 0.0 and 1.0");
+        }
+        match suggestion.status.as_str() {
+            "pending" | "approved" | "rejected" | "dismissed" => {}
+            _ => return invalid(format!("organization_suggestions contains invalid status '{}'", suggestion.status)),
+        }
+        if suggestion.created_at.trim().is_empty() {
+            return invalid("organization_suggestions contains missing created_at timestamp");
+        }
+        if let Some(reviewed_at) = &suggestion.reviewed_at {
+            if reviewed_at.trim().is_empty() {
+                return invalid("organization_suggestions reviewed_at cannot be empty if specified");
+            }
+        }
+    }
+
+    // Phase 3: Suggestion files validation
+    let mut seen_suggestion_files: HashSet<(i64, i64)> = HashSet::new();
+    for link in &export.suggestion_files {
+        if !suggestion_ids.contains(&link.suggestion_id) {
+            return invalid("suggestion_files contains an unknown suggestion_id");
+        }
+        if !file_ids.contains(&link.file_id) {
+            return invalid("suggestion_files contains an unknown file_id");
+        }
+        if !seen_suggestion_files.insert((link.suggestion_id, link.file_id)) {
+            return invalid("suggestion_files contains a duplicate link");
+        }
+    }
+
+    // Phase 3: Duplicate groups validation
+    let mut duplicate_group_ids: HashSet<i64> = HashSet::new();
+    for group in &export.duplicate_groups {
+        if group.id <= 0 || !duplicate_group_ids.insert(group.id) {
+            return invalid("duplicate_groups must have unique positive IDs");
+        }
+        if group.match_type.trim().is_empty() {
+            return invalid("duplicate_groups contains an empty match_type");
+        }
+        if !(0.0..=1.0).contains(&group.confidence) || group.confidence.is_nan() {
+            return invalid("duplicate_groups confidence must be between 0.0 and 1.0");
+        }
+        match group.status.as_str() {
+            "pending" | "approved" | "rejected" | "dismissed" => {}
+            _ => return invalid(format!("duplicate_groups contains invalid status '{}'", group.status)),
+        }
+        if group.created_at.trim().is_empty() {
+            return invalid("duplicate_groups contains missing created_at timestamp");
+        }
+    }
+
+    // Phase 3: Duplicate group files validation
+    let mut seen_duplicate_group_files: HashSet<(i64, i64)> = HashSet::new();
+    for link in &export.duplicate_group_files {
+        if !duplicate_group_ids.contains(&link.group_id) {
+            return invalid("duplicate_group_files contains an unknown group_id");
+        }
+        if !file_ids.contains(&link.file_id) {
+            return invalid("duplicate_group_files contains an unknown file_id");
+        }
+        if !seen_duplicate_group_files.insert((link.group_id, link.file_id)) {
+            return invalid("duplicate_group_files contains a duplicate link");
         }
     }
 
@@ -2197,6 +2276,10 @@ mod tests {
             file_collections: vec![],
             file_tags: vec![],
             file_notes: vec![],
+            organization_suggestions: vec![],
+            suggestion_files: vec![],
+            duplicate_groups: vec![],
+            duplicate_group_files: vec![],
         };
         assert!(validate_export(&export).is_ok());
     }
@@ -2221,6 +2304,10 @@ mod tests {
             file_collections: vec![],
             file_tags: vec![],
             file_notes: vec![],
+            organization_suggestions: vec![],
+            suggestion_files: vec![],
+            duplicate_groups: vec![],
+            duplicate_group_files: vec![],
         };
         let err = validate_export(&export).unwrap_err();
         assert!(err.contains("format_version"));
@@ -2246,6 +2333,10 @@ mod tests {
             file_collections: vec![],
             file_tags: vec![],
             file_notes: vec![],
+            organization_suggestions: vec![],
+            suggestion_files: vec![],
+            duplicate_groups: vec![],
+            duplicate_group_files: vec![],
         };
         let err = validate_export(&export).unwrap_err();
         assert!(err.contains("total_roots"));
@@ -2270,6 +2361,15 @@ mod tests {
         assert!(parsed.get("summary").is_some(), "missing summary");
         assert!(parsed.get("scan_roots").is_some(), "missing scan_roots");
         assert!(parsed.get("files").is_some(), "missing files");
+        assert!(parsed.get("collections").is_some(), "missing collections");
+        assert!(parsed.get("tags").is_some(), "missing tags");
+        assert!(parsed.get("file_collections").is_some(), "missing file_collections");
+        assert!(parsed.get("file_tags").is_some(), "missing file_tags");
+        assert!(parsed.get("file_notes").is_some(), "missing file_notes");
+        assert!(parsed.get("organization_suggestions").is_some(), "missing organization_suggestions");
+        assert!(parsed.get("suggestion_files").is_some(), "missing suggestion_files");
+        assert!(parsed.get("duplicate_groups").is_some(), "missing duplicate_groups");
+        assert!(parsed.get("duplicate_group_files").is_some(), "missing duplicate_group_files");
 
         // Verify summary sub-fields
         let summary = parsed.get("summary").unwrap();
@@ -2278,7 +2378,7 @@ mod tests {
         assert!(summary.get("total_size_bytes").is_some());
         assert!(summary.get("export_timestamp").is_some());
 
-        // format_version should match the current Phase 2 export format
+        // format_version should match the current export format
         assert_eq!(
             parsed["format_version"].as_str().unwrap(),
             EXPORT_FORMAT_VERSION

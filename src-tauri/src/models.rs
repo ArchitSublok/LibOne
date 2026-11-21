@@ -200,7 +200,19 @@ pub struct ExportSummary {
 }
 
 /// Current portable metadata export format version.
-pub const EXPORT_FORMAT_VERSION: &str = "1.1.0";
+pub const EXPORT_FORMAT_VERSION: &str = "1.2.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SuggestionFileLink {
+    pub suggestion_id: i64,
+    pub file_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DuplicateGroupFileLink {
+    pub group_id: i64,
+    pub file_id: i64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryExport {
@@ -211,11 +223,24 @@ pub struct LibraryExport {
     pub summary: ExportSummary,
     pub scan_roots: Vec<ScanRoot>,
     pub files: Vec<IndexedFile>,
+    #[serde(default)]
     pub collections: Vec<Collection>,
+    #[serde(default)]
     pub tags: Vec<Tag>,
+    #[serde(default)]
     pub file_collections: Vec<FileCollectionLink>,
+    #[serde(default)]
     pub file_tags: Vec<FileTagLink>,
+    #[serde(default)]
     pub file_notes: Vec<FileNote>,
+    #[serde(default)]
+    pub organization_suggestions: Vec<OrganizationSuggestion>,
+    #[serde(default)]
+    pub suggestion_files: Vec<SuggestionFileLink>,
+    #[serde(default)]
+    pub duplicate_groups: Vec<DuplicateGroup>,
+    #[serde(default)]
+    pub duplicate_group_files: Vec<DuplicateGroupFileLink>,
 }
 
 // ── Phase 3: Suggestions & Duplicates ────────────────────────────────────────

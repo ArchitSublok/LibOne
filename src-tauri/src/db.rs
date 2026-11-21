@@ -1,10 +1,10 @@
 //! The local SQLite repository. SQL is deliberately contained here, away from Tauri commands.
 
 use crate::models::{
-    BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail, ExportSummary,
-    FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
-    IndexedFile, LibraryExport, NewIndexedFile, OrganizationSuggestion, PaginatedFiles, ScanRoot,
-    ScanStats, Tag, EXPORT_FORMAT_VERSION,
+    BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail, DuplicateGroupFileLink,
+    ExportSummary, FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams,
+    FileTagLink, IndexedFile, LibraryExport, NewIndexedFile, OrganizationSuggestion, PaginatedFiles,
+    ScanRoot, ScanStats, SuggestionFileLink, Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -552,6 +552,10 @@ impl Database {
         let file_collections = self.list_file_collection_links(None, None)?;
         let file_tags = self.list_file_tag_links(None, None)?;
         let file_notes = self.list_all_file_notes()?;
+        let organization_suggestions = self.list_organization_suggestions(None, None)?;
+        let suggestion_files = self.list_all_suggestion_files()?;
+        let duplicate_groups = self.list_duplicate_groups(None)?;
+        let duplicate_group_files = self.list_all_duplicate_group_files()?;
         let exported_at = now();
 
         Ok(LibraryExport {
@@ -572,6 +576,10 @@ impl Database {
             file_collections,
             file_tags,
             file_notes,
+            organization_suggestions,
+            suggestion_files,
+            duplicate_groups,
+            duplicate_group_files,
         })
     }
 
@@ -1346,6 +1354,34 @@ impl Database {
         let conn = self.open()?;
         conn.execute("DELETE FROM duplicate_groups WHERE status='pending'", [])?;
         Ok(())
+    }
+
+    pub fn list_all_suggestion_files(&self) -> Result<Vec<SuggestionFileLink>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT suggestion_id, file_id FROM suggestion_files ORDER BY suggestion_id ASC, file_id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SuggestionFileLink {
+                suggestion_id: r.get(0)?,
+                file_id: r.get(1)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_all_duplicate_group_files(&self) -> Result<Vec<DuplicateGroupFileLink>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT group_id, file_id FROM duplicate_group_files ORDER BY group_id ASC, file_id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(DuplicateGroupFileLink {
+                group_id: r.get(0)?,
+                file_id: r.get(1)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Generates local organization suggestions and duplicate groups, persisting them into SQLite.

@@ -1,6 +1,6 @@
 # LibOne Portable Metadata Export Format Specification
 
-**Format Version**: `1.1.0`
+**Format Version**: `1.2.0`
 **MIME Type**: `application/json`
 **File Extension**: `.json`
 
@@ -12,7 +12,7 @@ LibOne provides a portable, human-readable JSON export format for library metada
 
 ### Non-Destructive Privacy Guarantees
 
-- **Metadata Only**: LibOne never stores, embeds, or exports document contents. Exports contain only filesystem metadata (paths, filenames, extensions, byte sizes, timestamps, hashes where computed, indexing status) plus user-authored organization metadata (collections, tags, links, and private notes).
+- **Metadata Only**: LibOne never stores, embeds, or exports document contents. Exports contain only filesystem metadata (paths, filenames, extensions, byte sizes, timestamps, hashes where computed, indexing status), user-authored organization metadata (collections, tags, links, private notes), and Phase 3 local organization proposals (organization suggestions, suggestion-file links, duplicate groups, duplicate-group files, suggestion status, and review timestamps).
 - **User-Authored Notes Only**: `file_notes[].note_text` is written only by the user. No automatically extracted document content is ever placed in a note.
 - **Zero Cloud Leakage**: Exports are generated locally on demand and saved directly to the user's chosen local filesystem path.
 - **Atomic Persistence**: Serialized JSON is written to a temporary sibling file (`.libone-export-<nanos>.tmp`) and atomically renamed to the final path, preventing partial or corrupt export files.
@@ -24,7 +24,7 @@ LibOne provides a portable, human-readable JSON export format for library metada
 
 ```json
 {
-  "format_version": "1.1.0",
+  "format_version": "1.2.0",
   "app": "LibOne",
   "version": "0.1.0",
   "exported_at": "2026-11-17T10:00:00.000Z",
@@ -132,6 +132,45 @@ LibOne provides a portable, human-readable JSON export format for library metada
       "created_at": "2026-11-15T11:00:00.000Z",
       "updated_at": "2026-11-16T09:30:00.000Z"
     }
+  ],
+  "organization_suggestions": [
+    {
+      "id": 1,
+      "suggestion_type": "suggest_tag",
+      "title": "Tag matching document as 'finance'",
+      "rationale": "File resides in 'Research' folder with finance references.",
+      "confidence": 0.85,
+      "status": "approved",
+      "created_at": "2026-11-17T09:50:00.000Z",
+      "reviewed_at": "2026-11-17T09:55:00.000Z",
+      "affected_file_ids": [101],
+      "suggested_tag_id": 20,
+      "suggested_tag_name": "reviewed",
+      "suggested_collection_id": null,
+      "suggested_collection_name": null
+    }
+  ],
+  "suggestion_files": [
+    {
+      "suggestion_id": 1,
+      "file_id": 101
+    }
+  ],
+  "duplicate_groups": [
+    {
+      "id": 1,
+      "match_type": "name_and_size",
+      "confidence": 0.75,
+      "created_at": "2026-11-17T09:50:00.000Z",
+      "status": "pending",
+      "file_ids": [101]
+    }
+  ],
+  "duplicate_group_files": [
+    {
+      "group_id": 1,
+      "file_id": 101
+    }
   ]
 }
 ```
@@ -144,7 +183,7 @@ LibOne provides a portable, human-readable JSON export format for library metada
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `format_version` | String | Yes | Semantic version of this export schema (`"1.1.0"` for this revision). |
+| `format_version` | String | Yes | Semantic version of this export schema (`"1.2.0"` for this revision). |
 | `app` | String | Yes | Identifier of the emitting application (always `"LibOne"`). |
 | `version` | String | Yes | Cargo package release version of the LibOne build that produced this export. |
 | `exported_at` | String (ISO 8601 UTC) | Yes | Timestamp when the export was initiated. |
@@ -156,6 +195,10 @@ LibOne provides a portable, human-readable JSON export format for library metada
 | `file_collections` | Array of FileCollectionLink | Yes (1.1.0+) | Many-to-many links between files and collections. |
 | `file_tags` | Array of FileTagLink | Yes (1.1.0+) | Many-to-many links between files and tags. |
 | `file_notes` | Array of FileNote | Yes (1.1.0+) | User-authored private notes. |
+| `organization_suggestions` | Array of OrganizationSuggestion | Yes (1.2.0+) | Local pattern and organization suggestions with review status and timestamps. |
+| `suggestion_files` | Array of SuggestionFileLink | Yes (1.2.0+) | Associations between organization suggestions and affected indexed files. |
+| `duplicate_groups` | Array of DuplicateGroup | Yes (1.2.0+) | Detected duplicate groups with match type, confidence, and status. |
+| `duplicate_group_files` | Array of DuplicateGroupFileLink | Yes (1.2.0+) | Associations between duplicate groups and member indexed files. |
 
 ### 3.2 `summary` Object
 
@@ -245,6 +288,49 @@ LibOne provides a portable, human-readable JSON export format for library metada
 | `created_at` | String (ISO 8601) | Creation timestamp. |
 | `updated_at` | String (ISO 8601) | Last edit timestamp. |
 
+### 3.10 `organization_suggestions[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Integer | Local database ID of the suggestion. |
+| `suggestion_type` | String | Category (`duplicate_files`, `likely_version`, `suggest_collection`, `suggest_tag`, `stale_file`). |
+| `title` | String | User-facing descriptive title. |
+| `rationale` | String | Deterministic heuristic explanation for the suggestion. |
+| `confidence` | Float | Confidence score between `0.0` and `1.0`. |
+| `status` | String | Workflow status (`pending`, `approved`, `rejected`, `dismissed`). |
+| `created_at` | String (ISO 8601) | When the suggestion was generated. |
+| `reviewed_at` | String or `null` | Timestamp when user explicitly approved, rejected, or dismissed the suggestion. |
+| `affected_file_ids` | Array of Integer | IDs of indexed files relevant to this suggestion. |
+| `suggested_tag_id` | Integer or `null` | Target tag ID if suggestion relates to an existing tag. |
+| `suggested_tag_name` | String or `null` | Target tag name if creating a new tag. |
+| `suggested_collection_id` | Integer or `null` | Target collection ID if suggestion relates to an existing collection. |
+| `suggested_collection_name` | String or `null` | Target collection name if creating a new collection. |
+
+### 3.11 `suggestion_files[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `suggestion_id` | Integer | Foreign key to `organization_suggestions.id`. |
+| `file_id` | Integer | Foreign key to `files.id`. |
+
+### 3.12 `duplicate_groups[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Integer | Local database ID of the duplicate cluster. |
+| `match_type` | String | Detection heuristic (`exact_hash`, `name_and_size`, `file_identity`). |
+| `confidence` | Float | Confidence score between `0.0` and `1.0`. |
+| `created_at` | String (ISO 8601) | When the duplicate group was formed. |
+| `status` | String | Review status (`pending`, `approved`, `rejected`, `dismissed`). |
+| `file_ids` | Array of Integer | IDs of member indexed files. |
+
+### 3.13 `duplicate_group_files[]` Object
+
+| Field | Type | Description |
+|---|---|---|
+| `group_id` | Integer | Foreign key to `duplicate_groups.id`. |
+| `file_id` | Integer | Foreign key to `files.id`. |
+
 ---
 
 ## 4. Semantic Compatibility Rules
@@ -253,8 +339,9 @@ LibOne follows Semantic Versioning (`MAJOR.MINOR.PATCH`) for the metadata format
 
 1. **Same Major Version (`1.x.y`)**:
    - Consumers MUST ignore unknown fields.
-   - `1.1.0` adds `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`. These arrays were absent in `1.0.0`; readers of older exports must treat a missing array as empty.
-   - No Phase 1 field is removed or renamed, and existing field types remain stable.
+   - `1.1.0` added `collections`, `tags`, `file_collections`, `file_tags`, and `file_notes`.
+   - `1.2.0` adds `organization_suggestions`, `suggestion_files`, `duplicate_groups`, and `duplicate_group_files`. Readers of older exports (`1.0.0` or `1.1.0`) must treat missing arrays as empty.
+   - No Phase 1 or Phase 2 field is removed or renamed, and existing field types remain stable.
 
 2. **Breaking Changes (`2.0.0`)**:
    - Field removal, renaming, or type changes require a major version bump.
@@ -267,8 +354,10 @@ LibOne follows Semantic Versioning (`MAJOR.MINOR.PATCH`) for the metadata format
    - `summary.total_files == files.length`.
    - `summary.total_size_bytes == sum(files[i].size_bytes)`.
    - `summary.export_timestamp == exported_at`.
-   - All IDs referenced by files, links, and notes exist in their corresponding arrays; link pairs and note IDs are unique.
-   - Collection/tag names and note text are non-empty.
+   - All IDs referenced by files, links, notes, suggestions, and duplicate groups exist in their corresponding arrays; link pairs and note IDs are unique.
+   - Collection/tag names, note text, suggestion titles/types, and match types are non-empty.
+   - Suggestion and duplicate group confidence values are within `0.0` to `1.0`.
+   - Suggestion and duplicate group statuses are valid workflow states (`pending`, `approved`, `rejected`, `dismissed`).
 
 ---
 
