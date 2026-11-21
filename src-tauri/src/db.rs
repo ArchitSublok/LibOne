@@ -1,9 +1,10 @@
 //! The local SQLite repository. SQL is deliberately contained here, away from Tauri commands.
 
 use crate::models::{
-    BulkSuggestionResult, Collection, DuplicateGroup, ExportSummary, FileCollectionLink,
-    FileDetail, FileNote, FileQueryParams, FileTagLink, IndexedFile, LibraryExport, NewIndexedFile,
-    OrganizationSuggestion, PaginatedFiles, ScanRoot, ScanStats, Tag, EXPORT_FORMAT_VERSION,
+    BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail, ExportSummary,
+    FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
+    IndexedFile, LibraryExport, NewIndexedFile, OrganizationSuggestion, PaginatedFiles, ScanRoot,
+    ScanStats, Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -1539,7 +1540,7 @@ impl Database {
             .get_duplicate_group(group_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
 
-        if group.status == "approved" {
+        if group.status == "approved" && preferred_file_id.is_none() {
             return Ok(group);
         }
 
@@ -1580,6 +1581,12 @@ impl Database {
             Some(t) => t.id,
             None => self.create_tag("canonical", None)?.id,
         };
+        // Untag previous canonical if re-approving with different preference
+        for &fid in &group.file_ids {
+            if fid != canonical_id {
+                let _ = self.remove_file_from_tag(fid, canon_tag);
+            }
+        }
         let _ = self.add_file_to_tag(canonical_id, canon_tag);
 
         // 3. Add private note to non-canonical duplicates linking back to the canonical item
@@ -1594,6 +1601,65 @@ impl Database {
 
         self.update_duplicate_group_status(group_id, "approved")?;
         self.get_duplicate_group(group_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Fetches file comparison items for a list of file IDs.
+    pub fn get_files_comparison(&self, file_ids: &[i64]) -> Result<Vec<FileComparisonItem>> {
+        let mut items = Vec::new();
+        let canon_tag_id = self
+            .list_tags()?
+            .into_iter()
+            .find(|t| t.name.eq_ignore_ascii_case("canonical"))
+            .map(|t| t.id);
+
+        for &fid in file_ids {
+            if let Some(file) = self.get_indexed_file(fid)? {
+                let root = self.get_scan_root(file.scan_root_id)?;
+                let (root_name, root_enabled) = match root {
+                    Some(r) => (r.display_name, r.enabled),
+                    None => ("Unknown Root".to_string(), false),
+                };
+                let exists = Path::new(&file.absolute_path).exists();
+                let is_canonical = if let Some(ctid) = canon_tag_id {
+                    self.list_file_tags(fid)?.iter().any(|t| t.id == ctid)
+                } else {
+                    false
+                };
+
+                items.push(FileComparisonItem {
+                    file,
+                    root_display_name: root_name,
+                    root_enabled,
+                    exists_on_disk: exists,
+                    is_canonical,
+                });
+            }
+        }
+        Ok(items)
+    }
+
+    /// Fetches a duplicate group with all associated comparison file items.
+    pub fn get_duplicate_group_detail(
+        &self,
+        group_id: i64,
+    ) -> Result<Option<DuplicateGroupDetail>> {
+        let group = match self.get_duplicate_group(group_id)? {
+            Some(g) => g,
+            None => return Ok(None),
+        };
+        let files = self.get_files_comparison(&group.file_ids)?;
+        Ok(Some(DuplicateGroupDetail { group, files }))
+    }
+
+    /// Explicitly marks a file in a duplicate group as preferred, updating metadata tags and notes.
+    pub fn mark_duplicate_preferred(
+        &self,
+        group_id: i64,
+        preferred_file_id: i64,
+    ) -> Result<DuplicateGroupDetail> {
+        let _ = self.approve_duplicate_group(group_id, Some(preferred_file_id))?;
+        self.get_duplicate_group_detail(group_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 

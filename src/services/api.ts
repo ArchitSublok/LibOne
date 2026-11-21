@@ -6,7 +6,9 @@ import {
   BulkSuggestionResult,
   Collection,
   DuplicateGroup,
+  DuplicateGroupDetail,
   FileCollectionLink,
+  FileComparisonItem,
   FileDetail,
   FileNote,
   FileQueryParams,
@@ -1448,6 +1450,42 @@ export async function getDuplicateGroup(id: number): Promise<DuplicateGroup> {
   const group = mockDuplicateGroups.find((g) => g.id === id);
   if (!group) throw new Error(`Duplicate group #${id} not found.`);
   return group;
+}
+
+export async function getDuplicateGroupDetail(
+  id: number
+): Promise<DuplicateGroupDetail> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroupDetail>("get_duplicate_group_detail", { id });
+  }
+  const group = mockDuplicateGroups.find((g) => g.id === id);
+  if (!group) throw new Error(`Duplicate group #${id} not found.`);
+  return { group, files: [] };
+}
+
+export async function getFileComparison(
+  fileIds: number[]
+): Promise<FileComparisonItem[]> {
+  if (isTauriEnvironment()) {
+    return await invoke<FileComparisonItem[]>("get_file_comparison", { fileIds });
+  }
+  return [];
+}
+
+export async function markDuplicatePreferred(
+  id: number,
+  preferredFileId: number
+): Promise<DuplicateGroupDetail> {
+  if (isTauriEnvironment()) {
+    return await invoke<DuplicateGroupDetail>("mark_duplicate_preferred", {
+      id,
+      preferredFileId,
+    });
+  }
+  const group = mockDuplicateGroups.find((g) => g.id === id);
+  if (!group) throw new Error(`Duplicate group #${id} not found.`);
+  group.status = "approved";
+  return { group, files: [] };
 }
 
 export async function approveDuplicateGroup(

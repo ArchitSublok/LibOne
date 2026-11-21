@@ -20,7 +20,7 @@ import {
   Tag as TagIcon,
   X,
 } from "lucide-react";
-import { IndexedFile, OrganizationSuggestion } from "../types";
+import { DuplicateGroup, IndexedFile, OrganizationSuggestion } from "../types";
 import {
   approveSuggestion,
   bulkApproveSuggestions,
@@ -28,9 +28,12 @@ import {
   dismissSuggestion,
   generateSuggestions,
   getIndexedFileDetail,
+  listDuplicateGroups,
   listOrganizationSuggestions,
   rejectSuggestion,
 } from "../services/api";
+import { DuplicateGroupDetailView } from "./DuplicateGroupDetailView";
+import { VersionGroupDisplay, StaleFileExplanation } from "./RelationshipViews";
 
 interface Props {
   onBackToLibrary: () => void;
@@ -75,16 +78,24 @@ export const SuggestionsView: React.FC<Props> = ({
   const [fileCache, setFileCache] = useState<Record<number, IndexedFile>>({});
   const [filesLoading, setFilesLoading] = useState<Record<number, boolean>>({});
 
+  // Duplicate group detail view state
+  const [selectedDuplicateGroupId, setSelectedDuplicateGroupId] = useState<number | null>(null);
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
+
   // ── Load suggestions ───────────────────────────────────────────────────────
   const loadSuggestions = async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await listOrganizationSuggestions(
-        statusFilter === "all" ? null : statusFilter,
-        typeFilter === "all" ? null : typeFilter
-      );
+      const [data, dGroups] = await Promise.all([
+        listOrganizationSuggestions(
+          statusFilter === "all" ? null : statusFilter,
+          typeFilter === "all" ? null : typeFilter
+        ),
+        listDuplicateGroups(statusFilter === "all" ? null : statusFilter),
+      ]);
       setSuggestions(data);
+      setDuplicateGroups(dGroups);
       if (onSuggestionsChanged) {
         onSuggestionsChanged();
       }
@@ -316,6 +327,14 @@ export const SuggestionsView: React.FC<Props> = ({
     const isProcessing = processingId === suggestion.id;
     const isSelected = selectedIds.includes(suggestion.id);
 
+    const matchingGroup =
+      suggestion.suggestion_type === "duplicate_files"
+        ? duplicateGroups.find((g) => {
+            if (g.file_ids.length !== suggestion.affected_file_ids.length) return false;
+            return g.file_ids.every((fid) => suggestion.affected_file_ids.includes(fid));
+          }) || (duplicateGroups.length > 0 ? duplicateGroups[0] : null)
+        : null;
+
     const confidenceClass =
       suggestion.confidence >= 0.85
         ? "confidence-badge--high"
@@ -374,6 +393,17 @@ export const SuggestionsView: React.FC<Props> = ({
 
           {/* Action buttons (approval requires explicit user click) */}
           <div className="suggestion-card__actions">
+            {matchingGroup && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setSelectedDuplicateGroupId(matchingGroup.id)}
+                title="Open side-by-side file comparison and mark preferred version"
+              >
+                <Copy size={13} />
+                <span>Compare & Review</span>
+              </button>
+            )}
             {suggestion.status === "pending" ? (
               <>
                 <button
@@ -435,32 +465,53 @@ export const SuggestionsView: React.FC<Props> = ({
           </button>
 
           {isExpanded && (
-            <div className="affected-files-list">
-              {suggestion.affected_file_ids.map((fid) => {
-                const file = fileCache[fid];
-                const isLoading = filesLoading[fid];
+            <div className="affected-files-expanded-wrapper">
+              {suggestion.suggestion_type === "likely_version" ? (
+                <VersionGroupDisplay suggestion={suggestion} />
+              ) : suggestion.suggestion_type === "stale_file" ? (
+                <StaleFileExplanation suggestion={suggestion} />
+              ) : (
+                <>
+                  <div className="affected-files-list">
+                    {suggestion.affected_file_ids.map((fid) => {
+                      const file = fileCache[fid];
+                      const isLoading = filesLoading[fid];
 
-                return (
-                  <div key={fid} className="affected-file-row">
-                    <FileText size={14} className="affected-file-icon" />
-                    {isLoading ? (
-                      <span className="affected-file-loading">Loading file #{fid}…</span>
-                    ) : file ? (
-                      <div className="affected-file-info">
-                        <span className="affected-file-name">{file.file_name}</span>
-                        <span className="affected-file-path" title={file.absolute_path}>
-                          {file.absolute_path}
-                        </span>
-                        <span className="affected-file-size">
-                          {formatBytes(file.size_bytes)}
-                        </span>
-                      </div>
-                    ) : (
-                      <span className="affected-file-name">Document #{fid}</span>
-                    )}
+                      return (
+                        <div key={fid} className="affected-file-row">
+                          <FileText size={14} className="affected-file-icon" />
+                          {isLoading ? (
+                            <span className="affected-file-loading">Loading file #{fid}…</span>
+                          ) : file ? (
+                            <div className="affected-file-info">
+                              <span className="affected-file-name">{file.file_name}</span>
+                              <span className="affected-file-path" title={file.absolute_path}>
+                                {file.absolute_path}
+                              </span>
+                              <span className="affected-file-size">
+                                {formatBytes(file.size_bytes)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="affected-file-name">Document #{fid}</span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                  {matchingGroup && (
+                    <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => setSelectedDuplicateGroupId(matchingGroup.id)}
+                      >
+                        <Copy size={13} /> Open Comparison & Mark Preferred
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -506,6 +557,22 @@ export const SuggestionsView: React.FC<Props> = ({
   };
 
   // ── Main UI ───────────────────────────────────────────────────────────────
+  if (selectedDuplicateGroupId !== null) {
+    return (
+      <DuplicateGroupDetailView
+        groupId={selectedDuplicateGroupId}
+        onBack={() => {
+          setSelectedDuplicateGroupId(null);
+          loadSuggestions();
+        }}
+        onGroupChanged={() => {
+          loadSuggestions();
+          onSuggestionsChanged?.();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="suggestions-view-container">
       {/* ── Top Bar / Header ───────────────────────────────────────────────── */}

@@ -208,6 +208,19 @@ export interface DuplicateGroup {
   file_ids: number[];
 }
 
+export interface FileComparisonItem {
+  file: IndexedFile;
+  root_display_name: string;
+  root_enabled: boolean;
+  exists_on_disk: boolean;
+  is_canonical: boolean;
+}
+
+export interface DuplicateGroupDetail {
+  group: DuplicateGroup;
+  files: FileComparisonItem[];
+}
+
 export interface BulkSuggestionResult {
   approved_ids: number[];
   rejected_ids: number[];

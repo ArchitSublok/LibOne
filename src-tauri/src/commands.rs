@@ -11,10 +11,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::Database;
 use crate::models::{
-    AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, FileCollectionLink, FileDetail,
-    FileNote, FileQueryParams, FileTagLink, IndexedFile, LibraryExport, OrganizationSuggestion,
-    PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats, Tag, WatcherOverallStatus,
-    EXPORT_FORMAT_VERSION,
+    AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail,
+    FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
+    IndexedFile, LibraryExport, OrganizationSuggestion, PaginatedFiles, ScanOptions, ScanProgress,
+    ScanRoot, ScanStats, Tag, WatcherOverallStatus, EXPORT_FORMAT_VERSION,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -1631,6 +1631,44 @@ pub fn get_duplicate_group(id: i64, state: State<'_, AppState>) -> Result<Duplic
     get_duplicate_group_inner(&db, id)
 }
 
+pub fn get_duplicate_group_detail_inner(
+    db: &Database,
+    id: i64,
+) -> Result<DuplicateGroupDetail, String> {
+    validate_positive_id(id, "Duplicate group")?;
+    db.get_duplicate_group_detail(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Duplicate group #{id} not found."))
+}
+
+#[tauri::command]
+pub fn get_duplicate_group_detail(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<DuplicateGroupDetail, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_duplicate_group_detail_inner(&db, id)
+}
+
+pub fn get_file_comparison_inner(
+    db: &Database,
+    file_ids: Vec<i64>,
+) -> Result<Vec<FileComparisonItem>, String> {
+    for &fid in &file_ids {
+        validate_positive_id(fid, "File")?;
+    }
+    db.get_files_comparison(&file_ids).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn get_file_comparison(
+    file_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileComparisonItem>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_file_comparison_inner(&db, file_ids)
+}
+
 pub fn approve_duplicate_group_inner(
     db: &Database,
     id: i64,
@@ -1642,7 +1680,7 @@ pub fn approve_duplicate_group_inner(
         .map_err(db_err)?
         .ok_or_else(|| format!("Duplicate group #{id} not found."))?;
 
-    if group.status == "approved" {
+    if group.status == "approved" && preferred_file_id.is_none() {
         return Ok(group);
     }
 
@@ -1657,11 +1695,98 @@ pub fn approve_duplicate_group_inner(
                 "Preferred file #{pref_id} is not part of duplicate group #{id}."
             ));
         }
-        validate_file_for_organization(db, pref_id)?;
+        let pref_file = validate_file_for_organization(db, pref_id)?;
+        if pref_file.status == "missing" {
+            return Err(format!(
+                "Action denied: Cannot mark file #{pref_id} as preferred because it is missing."
+            ));
+        }
+        if pref_file.status == "inaccessible" {
+            return Err(format!(
+                "Action denied: Cannot mark file #{pref_id} as preferred because it is inaccessible."
+            ));
+        }
+        if !std::path::Path::new(&pref_file.absolute_path).exists() {
+            return Err(format!(
+                "Action denied: Cannot mark file #{pref_id} as preferred because it does not exist on disk."
+            ));
+        }
+    } else {
+        // Ensure at least one file in the group exists on disk and is not missing/inaccessible
+        let mut available = false;
+        for &fid in &group.file_ids {
+            if let Ok(Some(f)) = db.get_indexed_file(fid) {
+                if f.status != "missing"
+                    && f.status != "inaccessible"
+                    && std::path::Path::new(&f.absolute_path).exists()
+                {
+                    available = true;
+                    break;
+                }
+            }
+        }
+        if !available {
+            return Err(format!(
+                "Action denied: Cannot approve duplicate group #{id} because all files in the group are missing, inaccessible, or deleted from disk."
+            ));
+        }
     }
 
     db.approve_duplicate_group(id, preferred_file_id)
         .map_err(db_err)
+}
+
+pub fn mark_duplicate_preferred_inner(
+    db: &Database,
+    id: i64,
+    preferred_file_id: i64,
+) -> Result<DuplicateGroupDetail, String> {
+    validate_positive_id(id, "Duplicate group")?;
+    validate_positive_id(preferred_file_id, "Preferred file")?;
+    let group = db
+        .get_duplicate_group(id)
+        .map_err(db_err)?
+        .ok_or_else(|| format!("Duplicate group #{id} not found."))?;
+
+    if !group.file_ids.contains(&preferred_file_id) {
+        return Err(format!(
+            "Preferred file #{preferred_file_id} is not part of duplicate group #{id}."
+        ));
+    }
+
+    for &fid in &group.file_ids {
+        validate_file_for_organization(db, fid)?;
+    }
+
+    let pref_file = validate_file_for_organization(db, preferred_file_id)?;
+    if pref_file.status == "missing" {
+        return Err(format!(
+            "Action denied: Cannot mark file #{preferred_file_id} as preferred because it is missing."
+        ));
+    }
+    if pref_file.status == "inaccessible" {
+        return Err(format!(
+            "Action denied: Cannot mark file #{preferred_file_id} as preferred because it is inaccessible."
+        ));
+    }
+    if !std::path::Path::new(&pref_file.absolute_path).exists() {
+        return Err(format!(
+            "Action denied: Cannot mark file #{preferred_file_id} as preferred because it does not exist on disk."
+        ));
+    }
+
+    db.mark_duplicate_preferred(id, preferred_file_id)
+        .map_err(db_err)
+}
+
+#[tauri::command]
+pub fn mark_duplicate_preferred(
+    id: i64,
+    preferred_file_id: i64,
+    state: State<'_, AppState>,
+) -> Result<DuplicateGroupDetail, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    mark_duplicate_preferred_inner(&db, id, preferred_file_id)
 }
 
 #[tauri::command]
@@ -3373,6 +3498,295 @@ mod tests {
             "rejected"
         );
 
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_duplicate_group_and_comparison_detail_views() {
+        let dir = temp_auth_dir("dup_detail_view");
+        let (db, db_dir) = test_auth_db("dup_detail_view");
+
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Test Root")
+            .unwrap();
+        let path1 = dir.join("report_v1.pdf");
+        let path2 = dir.join("report_v2.pdf");
+        fs::write(&path1, "PDF content 1").unwrap();
+        fs::write(&path2, "PDF content 2").unwrap();
+
+        let f1 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path1.to_str().unwrap().into(),
+                normalized_path: path1.to_str().unwrap().into(),
+                file_name: "report_v1.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 13,
+                modified_at: Some("2026-11-20T10:00:00Z".into()),
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("hash_1111".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let f2 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path2.to_str().unwrap().into(),
+                normalized_path: path2.to_str().unwrap().into(),
+                file_name: "report_v2.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 13,
+                modified_at: Some("2026-11-20T10:05:00Z".into()),
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("hash_1111".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let group = db
+            .insert_duplicate_group("exact_hash", 1.0, &[f1.id, f2.id])
+            .unwrap();
+
+        // 1. Test get_duplicate_group_detail_inner
+        let detail = get_duplicate_group_detail_inner(&db, group.id).unwrap();
+        assert_eq!(detail.group.id, group.id);
+        assert_eq!(detail.files.len(), 2);
+        assert_eq!(detail.files[0].file.id, f1.id);
+        assert_eq!(detail.files[0].root_display_name, "Test Root");
+        assert!(detail.files[0].root_enabled);
+        assert!(detail.files[0].exists_on_disk);
+        assert!(!detail.files[0].is_canonical);
+
+        // 2. Test get_file_comparison_inner
+        let comp = get_file_comparison_inner(&db, vec![f1.id, f2.id]).unwrap();
+        assert_eq!(comp.len(), 2);
+        assert_eq!(comp[0].file.file_name, "report_v1.pdf");
+        assert_eq!(comp[1].file.file_name, "report_v2.pdf");
+        assert_eq!(
+            comp[0].file.content_hash_nullable.as_deref(),
+            Some("hash_1111")
+        );
+        assert_eq!(
+            comp[1].file.content_hash_nullable.as_deref(),
+            Some("hash_1111")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_mark_duplicate_preferred_action_and_metadata_updates() {
+        let dir = temp_auth_dir("dup_pref_action");
+        let (db, db_dir) = test_auth_db("dup_pref_action");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Docs").unwrap();
+        let path1 = dir.join("doc1.pdf");
+        let path2 = dir.join("doc2.pdf");
+        fs::write(&path1, "Contract doc content").unwrap();
+        fs::write(&path2, "Contract doc content").unwrap();
+
+        let f1 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path1.to_str().unwrap().into(),
+                normalized_path: path1.to_str().unwrap().into(),
+                file_name: "doc1.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 20,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("sha_contract".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let f2 = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path2.to_str().unwrap().into(),
+                normalized_path: path2.to_str().unwrap().into(),
+                file_name: "doc2.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 20,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("sha_contract".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let group = db
+            .insert_duplicate_group("exact_hash", 1.0, &[f1.id, f2.id])
+            .unwrap();
+
+        // Mark f2 as preferred
+        let updated = mark_duplicate_preferred_inner(&db, group.id, f2.id).unwrap();
+        assert_eq!(updated.group.status, "approved");
+
+        // Verify f2 is canonical and f1 is not
+        let item_f1 = updated.files.iter().find(|i| i.file.id == f1.id).unwrap();
+        let item_f2 = updated.files.iter().find(|i| i.file.id == f2.id).unwrap();
+        assert!(!item_f1.is_canonical);
+        assert!(item_f2.is_canonical);
+
+        // Verify tags: both have "duplicate", only f2 has "canonical"
+        let tags1 = db.list_file_tags(f1.id).unwrap();
+        let tags2 = db.list_file_tags(f2.id).unwrap();
+        assert!(tags1.iter().any(|t| t.name == "duplicate"));
+        assert!(!tags1.iter().any(|t| t.name == "canonical"));
+        assert!(tags2.iter().any(|t| t.name == "duplicate"));
+        assert!(tags2.iter().any(|t| t.name == "canonical"));
+
+        // Switch preferred to f1
+        let updated2 = mark_duplicate_preferred_inner(&db, group.id, f1.id).unwrap();
+        let item_f1_new = updated2.files.iter().find(|i| i.file.id == f1.id).unwrap();
+        let item_f2_new = updated2.files.iter().find(|i| i.file.id == f2.id).unwrap();
+        assert!(item_f1_new.is_canonical);
+        assert!(!item_f2_new.is_canonical);
+
+        // Verify disk contents untouched
+        assert_eq!(fs::read_to_string(&path1).unwrap(), "Contract doc content");
+        assert_eq!(fs::read_to_string(&path2).unwrap(), "Contract doc content");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_duplicate_and_organization_safety_states() {
+        let dir = temp_auth_dir("dup_safety_states");
+        let (db, db_dir) = test_auth_db("dup_safety_states");
+
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Safety Root")
+            .unwrap();
+        let path_real = dir.join("exists.pdf");
+        let path_missing = dir.join("missing.pdf");
+        let path_inacc = dir.join("inaccessible.pdf");
+        fs::write(&path_real, "real file").unwrap();
+        fs::write(&path_inacc, "inaccessible file").unwrap();
+
+        let f_real = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path_real.to_str().unwrap().into(),
+                normalized_path: path_real.to_str().unwrap().into(),
+                file_name: "exists.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 9,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("h_real".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let f_missing = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path_missing.to_str().unwrap().into(),
+                normalized_path: path_missing.to_str().unwrap().into(),
+                file_name: "missing.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 9,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "missing".into(),
+                content_hash_nullable: Some("h_real".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let f_inacc = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: path_inacc.to_str().unwrap().into(),
+                normalized_path: path_inacc.to_str().unwrap().into(),
+                file_name: "inaccessible.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 17,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "inaccessible".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let grp = db
+            .insert_duplicate_group("exact_hash", 1.0, &[f_real.id, f_missing.id])
+            .unwrap();
+
+        // 1. Attempting to mark a missing file as preferred fails safely
+        let err_missing = mark_duplicate_preferred_inner(&db, grp.id, f_missing.id);
+        assert!(err_missing.is_err());
+        let msg = err_missing.unwrap_err();
+        assert!(msg.contains("missing") || msg.contains("not exist on disk"));
+
+        // 2. Attempting to mark an inaccessible file as preferred fails safely
+        let grp2 = db
+            .insert_duplicate_group("name_and_size", 0.7, &[f_real.id, f_inacc.id])
+            .unwrap();
+        let err_inacc = mark_duplicate_preferred_inner(&db, grp2.id, f_inacc.id);
+        assert!(err_inacc.is_err());
+        assert!(err_inacc.unwrap_err().contains("inaccessible"));
+
+        // 3. Approving duplicate group where all files are missing fails safely
+        let grp_all_missing = db
+            .insert_duplicate_group("exact_hash", 1.0, &[f_missing.id])
+            .unwrap();
+        let err_all_missing = approve_duplicate_group_inner(&db, grp_all_missing.id, None);
+        assert!(err_all_missing.is_err());
+        assert!(err_all_missing
+            .unwrap_err()
+            .contains("all files in the group are missing"));
+
+        // 4. Disabled scan root fails safely for approval and preferred action
+        db.remove_scan_root(root.id).unwrap(); // disables root
+        let err_disabled_app = approve_duplicate_group_inner(&db, grp.id, Some(f_real.id));
+        assert!(err_disabled_app.is_err());
+        assert!(err_disabled_app.unwrap_err().contains("is disabled"));
+
+        let err_disabled_pref = mark_duplicate_preferred_inner(&db, grp.id, f_real.id);
+        assert!(err_disabled_pref.is_err());
+        assert!(err_disabled_pref.unwrap_err().contains("is disabled"));
+
+        // 5. Moved file handling:
+        // Re-enable root
+        db.enable_scan_root(root.id, "Safety Root").unwrap();
+        let path_moved = dir.join("moved_to_subfolder.pdf");
+        fs::rename(&path_real, &path_moved).unwrap();
+
+        // Before scanner runs, old path does not exist on disk, so marking f_real as preferred fails safely
+        let err_not_found = mark_duplicate_preferred_inner(&db, grp.id, f_real.id);
+        assert!(err_not_found.is_err());
+        assert!(err_not_found
+            .unwrap_err()
+            .contains("does not exist on disk"));
+
+        // Once updated in DB with new path, it succeeds safely
+        let conn = db.open().unwrap();
+        conn.execute(
+            "UPDATE indexed_files SET absolute_path=?1, normalized_path=?2 WHERE id=?3",
+            rusqlite::params![
+                path_moved.to_str().unwrap(),
+                path_moved.to_str().unwrap(),
+                f_real.id
+            ],
+        )
+        .unwrap();
+
+        let succ_moved = mark_duplicate_preferred_inner(&db, grp.id, f_real.id);
+        assert!(succ_moved.is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
     }
 }

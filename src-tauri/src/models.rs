@@ -15,7 +15,7 @@ pub struct ScanRoot {
 }
 
 /// Local metadata for an original file. Document contents are never stored in SQLite.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexedFile {
     pub id: i64,
     pub scan_root_id: i64,
@@ -245,6 +245,21 @@ pub struct DuplicateGroup {
     pub created_at: String,
     pub status: String,
     pub file_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileComparisonItem {
+    pub file: IndexedFile,
+    pub root_display_name: String,
+    pub root_enabled: bool,
+    pub exists_on_disk: bool,
+    pub is_canonical: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DuplicateGroupDetail {
+    pub group: DuplicateGroup,
+    pub files: Vec<FileComparisonItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
