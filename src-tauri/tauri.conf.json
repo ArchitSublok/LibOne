@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; media-src 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none';"
     }
   },
   "bundle": {
@@ -35,8 +35,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "plugins": {
-    "opener": {}
   }
 }

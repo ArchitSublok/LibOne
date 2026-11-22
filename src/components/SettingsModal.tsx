@@ -77,7 +77,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
               <div className="settings-kv-row">
                 <span className="settings-kv-label">Export Format Spec</span>
-                <span className="settings-kv-value">v1.0.0</span>
+                <span className="settings-kv-value">v1.2.0</span>
               </div>
             </div>
           </div>

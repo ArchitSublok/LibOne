@@ -3992,4 +3992,779 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&db_dir);
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Phase 4 — Security-focused tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_security_path_traversal_outside_root_blocked() {
+        // Create two separate directories — root and sibling
+        let root_dir = temp_auth_dir("sec_traversal_root");
+        let sibling_dir = temp_auth_dir("sec_traversal_sibling");
+        let (db, db_dir) = test_auth_db("sec_traversal");
+
+        let root = db
+            .add_scan_root(root_dir.to_str().unwrap(), "Safe Root")
+            .unwrap();
+
+        // Create a file in the sibling directory (outside root)
+        let outside_file = sibling_dir.join("secret.pdf");
+        fs::write(&outside_file, "secret content").unwrap();
+
+        // Index the outside file under the wrong root
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: outside_file.to_str().unwrap().into(),
+                normalized_path: outside_file
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
+                file_name: "secret.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 14,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // validate_file_for_access must reject this path
+        let result = validate_file_for_access(&db, indexed.id);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("Security violation"),
+            "Path outside root must be caught as a security violation"
+        );
+
+        let _ = fs::remove_dir_all(&root_dir);
+        let _ = fs::remove_dir_all(&sibling_dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_dotdot_traversal_in_path_blocked() {
+        let root_dir = temp_auth_dir("sec_dotdot");
+        let (db, db_dir) = test_auth_db("sec_dotdot");
+
+        let root = db
+            .add_scan_root(root_dir.to_str().unwrap(), "Dot-Dot Root")
+            .unwrap();
+
+        // Craft a path with "../" that would escape the root
+        let malicious_path = format!(
+            "{}\\..\\..\\Windows\\System32\\drivers\\etc\\hosts",
+            root_dir.to_str().unwrap()
+        );
+
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: malicious_path.clone(),
+                normalized_path: malicious_path.to_lowercase(),
+                file_name: "hosts".into(),
+                extension: "".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let result = validate_file_for_access(&db, indexed.id);
+        assert!(result.is_err(), "Path with ../ traversal must be rejected");
+
+        let _ = fs::remove_dir_all(&root_dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_unauthorized_file_id_rejected() {
+        let (db, db_dir) = test_auth_db("sec_bad_id");
+
+        // Various invalid / non-existent file IDs
+        for bad_id in &[0i64, -1, -999, 999_999_999, i64::MAX] {
+            let result = validate_file_for_access(&db, *bad_id);
+            assert!(result.is_err(), "File ID {} must be rejected", bad_id);
+            let err = result.unwrap_err();
+            assert!(
+                err.contains("not indexed") || err.contains("Authorization denied"),
+                "Error for ID {} must reference authorization failure",
+                bad_id
+            );
+        }
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_disabled_root_blocks_file_access() {
+        let dir = temp_auth_dir("sec_disabled_root");
+        let (db, db_dir) = test_auth_db("sec_disabled_root");
+
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Disabled Root")
+            .unwrap();
+
+        let file_path = dir.join("document.pdf");
+        fs::write(&file_path, "some content").unwrap();
+
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: file_path.to_str().unwrap().into(),
+                normalized_path: file_path
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
+                file_name: "document.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 12,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // Access should work while root is enabled
+        assert!(validate_file_for_access(&db, indexed.id).is_ok());
+
+        // Disable the root (remove_scan_root sets enabled=false)
+        db.remove_scan_root(root.id).unwrap();
+
+        // Access must now fail
+        let result = validate_file_for_access(&db, indexed.id);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("disabled"),
+            "Disabled root must block file access"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_missing_file_safe_error_message() {
+        let dir = temp_auth_dir("sec_missing_file");
+        let (db, db_dir) = test_auth_db("sec_missing_file");
+
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Missing Root")
+            .unwrap();
+
+        let missing_path = dir.join("vanished.pdf");
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: missing_path.to_str().unwrap().into(),
+                normalized_path: missing_path
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
+                file_name: "vanished.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let result = validate_file_for_access(&db, indexed.id);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        // Error should mention the file is missing, not expose secrets
+        assert!(err_msg.contains("not found on disk") || err_msg.contains("unavailable"));
+        // Must not contain stack traces, SQL, or credential keywords
+        assert!(!err_msg.contains("password"));
+        assert!(!err_msg.contains("token"));
+        assert!(!err_msg.contains("rusqlite::"));
+        assert!(!err_msg.contains("PRAGMA"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_invalid_export_path_rejected() {
+        let (db, db_dir) = test_auth_db("sec_export_path");
+        let dir = temp_auth_dir("sec_export_path");
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Export Root")
+            .unwrap();
+
+        let f = dir.join("export_test.txt");
+        fs::write(&f, "content").unwrap();
+        let _ = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: f.to_str().unwrap().into(),
+                normalized_path: f.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "export_test.txt".into(),
+                extension: "txt".into(),
+                size_bytes: 7,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // Export to a nonexistent deeply nested path should fail
+        let bad_path = "Z:\\nonexistent\\deeply\\nested\\output.json";
+        let export = db.export_library().map_err(|e| format!("{e}")).unwrap();
+        validate_export(&export).unwrap(); // export data itself is valid
+        let json = serde_json::to_string_pretty(&export).unwrap();
+        let write_result = atomic_write_json(bad_path, &json);
+        assert!(
+            write_result.is_err(),
+            "Writing to a nonexistent path must fail"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_malformed_metadata_rejected() {
+        let (db, db_dir) = test_auth_db("sec_malformed");
+        let dir = temp_auth_dir("sec_malformed");
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Malform Root")
+            .unwrap();
+
+        let f = dir.join("test.pdf");
+        fs::write(&f, "data").unwrap();
+        let _ = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: f.to_str().unwrap().into(),
+                normalized_path: f.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "test.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 4,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // Build a valid export then corrupt various fields
+        let valid_export = db.export_library().unwrap();
+
+        // Test 1: NaN confidence in suggestion
+        {
+            let mut e = valid_export.clone();
+            e.organization_suggestions
+                .push(crate::models::OrganizationSuggestion {
+                    id: 1,
+                    suggestion_type: "suggest_tag".into(),
+                    title: "Bad confidence".into(),
+                    rationale: "test".into(),
+                    confidence: f64::NAN,
+                    status: "pending".into(),
+                    created_at: "2024-01-01T00:00:00Z".into(),
+                    reviewed_at: None,
+                    affected_file_ids: vec![],
+                    suggested_tag_id: None,
+                    suggested_tag_name: Some("tag".into()),
+                    suggested_collection_id: None,
+                    suggested_collection_name: None,
+                });
+            assert!(validate_export(&e).is_err());
+            assert!(validate_export(&e).unwrap_err().contains("confidence"));
+        }
+
+        // Test 2: Negative file ID
+        {
+            let mut e = valid_export.clone();
+            e.files.push(crate::models::IndexedFile {
+                id: -5,
+                scan_root_id: root.id,
+                absolute_path: "/bad".into(),
+                normalized_path: "/bad".into(),
+                file_name: "bad.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 0,
+                modified_at: None,
+                created_at_if_available: None,
+                discovered_at: "2024-01-01T00:00:00Z".into(),
+                last_seen_at: "2024-01-01T00:00:00Z".into(),
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            });
+            e.summary.total_files = e.files.len();
+            assert!(validate_export(&e).is_err());
+            assert!(validate_export(&e)
+                .unwrap_err()
+                .contains("unique positive IDs"));
+        }
+
+        // Test 3: Invalid suggestion status
+        {
+            let mut e = valid_export.clone();
+            e.organization_suggestions
+                .push(crate::models::OrganizationSuggestion {
+                    id: 2,
+                    suggestion_type: "suggest_tag".into(),
+                    title: "Bad status".into(),
+                    rationale: "test".into(),
+                    confidence: 0.5,
+                    status: "hacked".into(),
+                    created_at: "2024-01-01T00:00:00Z".into(),
+                    reviewed_at: None,
+                    affected_file_ids: vec![],
+                    suggested_tag_id: None,
+                    suggested_tag_name: Some("tag".into()),
+                    suggested_collection_id: None,
+                    suggested_collection_name: None,
+                });
+            assert!(validate_export(&e).is_err());
+            assert!(validate_export(&e).unwrap_err().contains("invalid status"));
+        }
+
+        // Test 4: Empty suggestion title
+        {
+            let mut e = valid_export.clone();
+            e.organization_suggestions
+                .push(crate::models::OrganizationSuggestion {
+                    id: 3,
+                    suggestion_type: "suggest_tag".into(),
+                    title: "   ".into(),
+                    rationale: "test".into(),
+                    confidence: 0.5,
+                    status: "pending".into(),
+                    created_at: "2024-01-01T00:00:00Z".into(),
+                    reviewed_at: None,
+                    affected_file_ids: vec![],
+                    suggested_tag_id: None,
+                    suggested_tag_name: Some("tag".into()),
+                    suggested_collection_id: None,
+                    suggested_collection_name: None,
+                });
+            assert!(validate_export(&e).is_err());
+            assert!(validate_export(&e).unwrap_err().contains("empty title"));
+        }
+
+        // Test 5: Empty format_version
+        {
+            let mut e = valid_export.clone();
+            e.format_version = String::new();
+            assert!(validate_export(&e).is_err());
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_zero_network_dependencies() {
+        // Parse Cargo.toml to verify no networking crates are present
+        let cargo_toml =
+            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+
+        let network_crates = [
+            "reqwest",
+            "hyper",
+            "actix",
+            "warp",
+            "axum",
+            "surf",
+            "isahc",
+            "ureq",
+            "curl",
+            "attohttpc",
+            "tungstenite",
+            "tokio-tungstenite",
+            "websocket",
+            "h2",
+            "tower-http",
+        ];
+
+        for crate_name in &network_crates {
+            assert!(
+                !cargo_toml.contains(crate_name),
+                "Network crate '{}' must not appear in Cargo.toml. \
+                 LibOne is a fully offline application.",
+                crate_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_security_export_contains_metadata_only() {
+        let (db, db_dir) = test_auth_db("sec_metadata_only");
+        let dir = temp_auth_dir("sec_metadata_only");
+
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Metadata Root")
+            .unwrap();
+
+        let f = dir.join("document.pdf");
+        // Write realistic-looking document content
+        fs::write(&f, "%PDF-1.4 This is actual document body content that must NEVER appear in exports. Confidential info here.").unwrap();
+
+        let _ = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: f.to_str().unwrap().into(),
+                normalized_path: f.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "document.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 97,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: Some("abc123".into()),
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let export = db.export_library().unwrap();
+        let json = serde_json::to_string(&export).unwrap();
+
+        // Document body content must NEVER appear in export
+        assert!(
+            !json.contains("actual document body content"),
+            "Export must not contain document file body content"
+        );
+        assert!(
+            !json.contains("Confidential info here"),
+            "Export must not leak file body text"
+        );
+        assert!(
+            !json.contains("%PDF-1.4 This is"),
+            "Export must not embed raw file bytes"
+        );
+
+        // Metadata fields that SHOULD be present
+        assert!(
+            json.contains("document.pdf"),
+            "Export should contain file name"
+        );
+        assert!(json.contains("pdf"), "Export should contain extension");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_errors_do_not_expose_sensitive_data() {
+        let (db, db_dir) = test_auth_db("sec_error_safety");
+        let dir = temp_auth_dir("sec_error_safety");
+
+        // Collect error messages from various failure scenarios
+        let mut error_messages: Vec<String> = Vec::new();
+
+        // 1. Nonexistent file ID
+        if let Err(e) = validate_file_for_access(&db, 99999) {
+            error_messages.push(e);
+        }
+
+        // 2. Nonexistent collection
+        if let Err(e) = get_collection_inner(&db, 99999) {
+            error_messages.push(e);
+        }
+
+        // 3. Nonexistent tag
+        if let Err(e) = get_tag_inner(&db, 99999) {
+            error_messages.push(e);
+        }
+
+        // 4. Empty collection name
+        if let Err(e) = create_collection_inner(&db, "", None, None) {
+            error_messages.push(e);
+        }
+
+        // 5. Empty tag name
+        if let Err(e) = create_tag_inner(&db, "", None) {
+            error_messages.push(e);
+        }
+
+        // 6. File in disabled root
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Error Root")
+            .unwrap();
+        let fp = dir.join("file.txt");
+        fs::write(&fp, "data").unwrap();
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: fp.to_str().unwrap().into(),
+                normalized_path: fp.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "file.txt".into(),
+                extension: "txt".into(),
+                size_bytes: 4,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+        db.remove_scan_root(root.id).unwrap();
+        if let Err(e) = validate_file_for_access(&db, indexed.id) {
+            error_messages.push(e);
+        }
+
+        // Verify no error message contains sensitive patterns
+        let sensitive_patterns = [
+            "password",
+            "secret",
+            "token",
+            "api_key",
+            "apikey",
+            "credential",
+            "PRAGMA",
+            "sqlite3_",
+            "backtrace",
+            "panicked at",
+        ];
+
+        for msg in &error_messages {
+            for pattern in &sensitive_patterns {
+                assert!(
+                    !msg.to_lowercase().contains(&pattern.to_lowercase()),
+                    "Error message must not contain '{}'. Found in: {}",
+                    pattern,
+                    msg
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_parameterized_sql_injection_attempt() {
+        let (db, db_dir) = test_auth_db("sec_sql_inject");
+        let dir = temp_auth_dir("sec_sql_inject");
+
+        // Attempt SQL injection in scan root name
+        let injection_name = "'; DROP TABLE scan_roots; --";
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), injection_name)
+            .unwrap();
+        // If SQL injection worked, the table would be gone and this would fail
+        let roots = db.list_scan_roots().unwrap();
+        assert!(
+            !roots.is_empty(),
+            "scan_roots table must survive SQL injection attempt"
+        );
+        assert_eq!(roots[0].display_name, injection_name);
+
+        // Attempt SQL injection in collection name
+        let inj_collection = "test'); DELETE FROM collections; --";
+        let _ = db.create_collection(inj_collection, None, None).unwrap();
+        let cols = db.list_collections().unwrap();
+        assert!(
+            !cols.is_empty(),
+            "collections table must survive SQL injection attempt"
+        );
+        assert_eq!(cols[0].name, inj_collection);
+
+        // Attempt SQL injection in tag name
+        let inj_tag = "tag'; UPDATE tags SET name='hacked'; --";
+        let _ = db.create_tag(inj_tag, None).unwrap();
+        let tags = db.list_tags().unwrap();
+        let found = tags.iter().find(|t| t.name == inj_tag);
+        assert!(
+            found.is_some(),
+            "Tag with injection string must be stored literally"
+        );
+
+        // Attempt SQL injection in file note
+        let fp = dir.join("note_test.pdf");
+        fs::write(&fp, "data").unwrap();
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: fp.to_str().unwrap().into(),
+                normalized_path: fp.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "note_test.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 4,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        let inj_note = "note'); DROP TABLE file_notes; --";
+        let note = create_file_note_inner(&db, indexed.id, inj_note).unwrap();
+        assert_eq!(note.note_text, inj_note);
+        // Table still exists
+        let notes = list_file_notes_inner(&db, indexed.id).unwrap();
+        assert_eq!(notes.len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_csp_is_strict_in_config() {
+        let config_content =
+            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json")).unwrap();
+
+        // CSP must NOT be null (wide open)
+        assert!(
+            !config_content.contains("\"csp\": null"),
+            "CSP must not be null — it must enforce a strict local-only policy"
+        );
+
+        // CSP must contain restrictive directives
+        assert!(
+            config_content.contains("default-src 'self'"),
+            "CSP must set default-src to 'self'"
+        );
+        assert!(
+            config_content.contains("script-src 'self'"),
+            "CSP must restrict script-src to 'self'"
+        );
+        assert!(
+            config_content.contains("object-src 'none'"),
+            "CSP must block object-src"
+        );
+        assert!(
+            config_content.contains("form-action 'none'"),
+            "CSP must block form submissions"
+        );
+    }
+
+    #[test]
+    fn test_security_no_opener_plugin_in_config() {
+        let config_content =
+            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json")).unwrap();
+
+        assert!(
+            !config_content.contains("\"opener\""),
+            "Unused opener plugin config must be removed from tauri.conf.json"
+        );
+
+        let cargo_toml =
+            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        assert!(
+            !cargo_toml.contains("tauri-plugin-opener"),
+            "Unused tauri-plugin-opener must be removed from Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn test_security_capabilities_are_minimal() {
+        let caps_content = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/default.json"
+        ))
+        .unwrap();
+
+        // Must not grant opener permissions
+        assert!(
+            !caps_content.contains("opener"),
+            "Capabilities must not include opener permissions"
+        );
+
+        // Must not grant shell permissions
+        assert!(
+            !caps_content.contains("shell"),
+            "Capabilities must not include shell permissions"
+        );
+
+        // Must not grant HTTP or fetch permissions
+        assert!(
+            !caps_content.contains("http"),
+            "Capabilities must not include HTTP permissions"
+        );
+    }
+
+    #[test]
+    fn test_security_validate_file_for_organization_disabled_root() {
+        let dir = temp_auth_dir("sec_org_disabled");
+        let (db, db_dir) = test_auth_db("sec_org_disabled");
+
+        let root = db.add_scan_root(dir.to_str().unwrap(), "Org Root").unwrap();
+        let fp = dir.join("org_file.pdf");
+        fs::write(&fp, "data").unwrap();
+
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: fp.to_str().unwrap().into(),
+                normalized_path: fp.to_str().unwrap().replace('/', "\\").to_lowercase(),
+                file_name: "org_file.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 4,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // Works when enabled
+        assert!(validate_file_for_organization(&db, indexed.id).is_ok());
+
+        // Disable root
+        db.remove_scan_root(root.id).unwrap();
+
+        // Organization operations must be blocked
+        let res = validate_file_for_organization(&db, indexed.id);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("disabled"));
+
+        // Adding to collection must also fail
+        let col = db.create_collection("Test Col", None, None).unwrap();
+        let add_res = add_file_to_collection_inner(&db, indexed.id, col.id);
+        assert!(add_res.is_err());
+
+        // Adding tag must also fail
+        let tag = db.create_tag("Test Tag", None).unwrap();
+        let tag_res = add_file_to_tag_inner(&db, indexed.id, tag.id);
+        assert!(tag_res.is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_export_format_version_matches() {
+        let (db, db_dir) = test_auth_db("sec_version");
+        let dir = temp_auth_dir("sec_version");
+        let _ = db
+            .add_scan_root(dir.to_str().unwrap(), "Version Root")
+            .unwrap();
+
+        let export = db.export_library().unwrap();
+        assert_eq!(
+            export.format_version, EXPORT_FORMAT_VERSION,
+            "Export format version must match the declared constant"
+        );
+        assert_eq!(
+            export.format_version, "1.2.0",
+            "Current export format version must be 1.2.0"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
 }
