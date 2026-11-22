@@ -13,10 +13,9 @@ use crate::db::Database;
 use crate::intelligence::{DisabledLocalProvider, LocalAiStatus, LocalIntelligenceProvider};
 use crate::models::{
     AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail,
-    DuplicateGroupFileLink, FileCollectionLink, FileComparisonItem, FileDetail, FileNote,
-    FileQueryParams, FileTagLink, IndexedFile, LibraryExport, OrganizationSuggestion,
-    PaginatedFiles, ScanOptions, ScanProgress, ScanRoot, ScanStats, SuggestionFileLink, Tag,
-    WatcherOverallStatus, EXPORT_FORMAT_VERSION,
+    FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
+    IndexedFile, LibraryExport, OrganizationSuggestion, PaginatedFiles, ScanOptions, ScanProgress,
+    ScanRoot, ScanStats, Tag, WatcherOverallStatus,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -807,14 +806,21 @@ fn validate_export(export: &LibraryExport) -> Result<(), String> {
         }
         match suggestion.status.as_str() {
             "pending" | "approved" | "rejected" | "dismissed" => {}
-            _ => return invalid(format!("organization_suggestions contains invalid status '{}'", suggestion.status)),
+            _ => {
+                return invalid(format!(
+                    "organization_suggestions contains invalid status '{}'",
+                    suggestion.status
+                ))
+            }
         }
         if suggestion.created_at.trim().is_empty() {
             return invalid("organization_suggestions contains missing created_at timestamp");
         }
         if let Some(reviewed_at) = &suggestion.reviewed_at {
             if reviewed_at.trim().is_empty() {
-                return invalid("organization_suggestions reviewed_at cannot be empty if specified");
+                return invalid(
+                    "organization_suggestions reviewed_at cannot be empty if specified",
+                );
             }
         }
     }
@@ -847,7 +853,12 @@ fn validate_export(export: &LibraryExport) -> Result<(), String> {
         }
         match group.status.as_str() {
             "pending" | "approved" | "rejected" | "dismissed" => {}
-            _ => return invalid(format!("duplicate_groups contains invalid status '{}'", group.status)),
+            _ => {
+                return invalid(format!(
+                    "duplicate_groups contains invalid status '{}'",
+                    group.status
+                ))
+            }
         }
         if group.created_at.trim().is_empty() {
             return invalid("duplicate_groups contains missing created_at timestamp");
@@ -2018,6 +2029,7 @@ pub fn get_local_ai_status() -> Result<LocalAiStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::EXPORT_FORMAT_VERSION;
     use std::fs;
 
     fn temp_auth_dir(name: &str) -> PathBuf {
@@ -2363,13 +2375,28 @@ mod tests {
         assert!(parsed.get("files").is_some(), "missing files");
         assert!(parsed.get("collections").is_some(), "missing collections");
         assert!(parsed.get("tags").is_some(), "missing tags");
-        assert!(parsed.get("file_collections").is_some(), "missing file_collections");
+        assert!(
+            parsed.get("file_collections").is_some(),
+            "missing file_collections"
+        );
         assert!(parsed.get("file_tags").is_some(), "missing file_tags");
         assert!(parsed.get("file_notes").is_some(), "missing file_notes");
-        assert!(parsed.get("organization_suggestions").is_some(), "missing organization_suggestions");
-        assert!(parsed.get("suggestion_files").is_some(), "missing suggestion_files");
-        assert!(parsed.get("duplicate_groups").is_some(), "missing duplicate_groups");
-        assert!(parsed.get("duplicate_group_files").is_some(), "missing duplicate_group_files");
+        assert!(
+            parsed.get("organization_suggestions").is_some(),
+            "missing organization_suggestions"
+        );
+        assert!(
+            parsed.get("suggestion_files").is_some(),
+            "missing suggestion_files"
+        );
+        assert!(
+            parsed.get("duplicate_groups").is_some(),
+            "missing duplicate_groups"
+        );
+        assert!(
+            parsed.get("duplicate_group_files").is_some(),
+            "missing duplicate_group_files"
+        );
 
         // Verify summary sub-fields
         let summary = parsed.get("summary").unwrap();
@@ -3909,12 +3936,17 @@ mod tests {
         assert_eq!(status.status_message, "Local AI is not configured");
         assert_eq!(status.provider_name, "DisabledLocalProvider");
         assert!(status.model_name.is_none());
-        assert!(!status.allows_network, "Network requests must be prohibited");
+        assert!(
+            !status.allows_network,
+            "Network requests must be prohibited"
+        );
 
         // 2. Verify deterministic suggestion generation works completely offline without AI
         let (db, db_dir) = test_auth_db("no_ai_app_test");
         let dir = temp_auth_dir("no_ai_app_test");
-        let root = db.add_scan_root(dir.to_str().unwrap(), "Offline Root").unwrap();
+        let root = db
+            .add_scan_root(dir.to_str().unwrap(), "Offline Root")
+            .unwrap();
 
         let path1 = dir.join("file1.pdf");
         let path2 = dir.join("file2.pdf");

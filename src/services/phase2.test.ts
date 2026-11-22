@@ -48,7 +48,7 @@ describe("Phase 2 search and export API", () => {
   it("exports all Phase 1 and Phase 2 metadata fields", async () => {
     const exportData = await exportLibraryMetadata();
 
-    expect(exportData.format_version).toBe("1.1.0");
+    expect(exportData.format_version).toBe("1.2.0");
     expect(exportData.summary.total_roots).toBe(exportData.scan_roots.length);
     expect(exportData.summary.total_files).toBe(exportData.files.length);
     expect(exportData.summary.total_size_bytes).toBe(
@@ -60,6 +60,10 @@ describe("Phase 2 search and export API", () => {
     expect(exportData.file_collections.length).toBeGreaterThan(0);
     expect(exportData.file_tags.length).toBeGreaterThan(0);
     expect(exportData.file_notes.length).toBeGreaterThan(0);
+    expect(exportData.organization_suggestions).toBeDefined();
+    expect(exportData.suggestion_files).toBeDefined();
+    expect(exportData.duplicate_groups).toBeDefined();
+    expect(exportData.duplicate_group_files).toBeDefined();
 
     const serialized = JSON.stringify(exportData);
     for (const key of [
@@ -71,6 +75,10 @@ describe("Phase 2 search and export API", () => {
       "file_collections",
       "file_tags",
       "file_notes",
+      "organization_suggestions",
+      "suggestion_files",
+      "duplicate_groups",
+      "duplicate_group_files",
     ]) {
       expect(serialized).toContain(`"${key}"`);
     }

@@ -3,8 +3,8 @@
 use crate::models::{
     BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail, DuplicateGroupFileLink,
     ExportSummary, FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams,
-    FileTagLink, IndexedFile, LibraryExport, NewIndexedFile, OrganizationSuggestion, PaginatedFiles,
-    ScanRoot, ScanStats, SuggestionFileLink, Tag, EXPORT_FORMAT_VERSION,
+    FileTagLink, IndexedFile, LibraryExport, NewIndexedFile, OrganizationSuggestion,
+    PaginatedFiles, ScanRoot, ScanStats, SuggestionFileLink, Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { SuggestionsView } from "./SuggestionsView";
 import * as api from "../services/api";
-import type { LocalAiStatus, OrganizationSuggestion, DuplicateGroup } from "../types";
+import type { LocalAiStatus, OrganizationSuggestion } from "../types";
 
 vi.mock("../services/api", () => ({
   listOrganizationSuggestions: vi.fn(),

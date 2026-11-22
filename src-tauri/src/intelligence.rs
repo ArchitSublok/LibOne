@@ -98,7 +98,10 @@ mod tests {
         assert_eq!(status.status_message, "Local AI is not configured");
         assert_eq!(status.provider_name, "DisabledLocalProvider");
         assert!(status.model_name.is_none());
-        assert!(!status.allows_network, "Network access must be strictly disallowed");
+        assert!(
+            !status.allows_network,
+            "Network access must be strictly disallowed"
+        );
 
         assert!(provider.enhance_rationale("test context").is_none());
     }

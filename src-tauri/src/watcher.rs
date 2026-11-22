@@ -568,8 +568,8 @@ mod tests {
         let mut paths = HashSet::new();
         paths.insert(file_path.clone());
 
-        let coalescing = Arc::new(AtomicBool::new(false));
-        let refreshing = Arc::new(AtomicBool::new(false));
+        let _coalescing = Arc::new(AtomicBool::new(false));
+        let _refreshing = Arc::new(AtomicBool::new(false));
 
         // Helper simulated targeted update (without needing AppHandle in pure unit test)
         let metadata = file_path.metadata().unwrap();

@@ -663,8 +663,21 @@ export async function exportLibraryMetadata(
 
   const totalSize = mockFiles.reduce((acc, f) => acc + f.size_bytes, 0);
   const exportedAt = new Date().toISOString();
+  const suggestionFiles = mockSuggestions.flatMap((s) =>
+    s.affected_file_ids.map((fid) => ({
+      suggestion_id: s.id,
+      file_id: fid,
+    }))
+  );
+  const duplicateGroupFiles = mockDuplicateGroups.flatMap((g) =>
+    g.file_ids.map((fid) => ({
+      group_id: g.id,
+      file_id: fid,
+    }))
+  );
+
   return {
-    format_version: "1.1.0",
+    format_version: "1.2.0",
     app: "LibOne",
     version: "0.1.0",
     exported_at: exportedAt,
@@ -681,6 +694,10 @@ export async function exportLibraryMetadata(
     file_collections: [...mockFileCollections],
     file_tags: [...mockFileTags],
     file_notes: [...mockNotes],
+    organization_suggestions: [...mockSuggestions],
+    suggestion_files: suggestionFiles,
+    duplicate_groups: [...mockDuplicateGroups],
+    duplicate_group_files: duplicateGroupFiles,
   };
 }
 
