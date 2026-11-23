@@ -3,8 +3,11 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AppInfo,
+  BackupResult,
+  BackupValidationResult,
   BulkSuggestionResult,
   Collection,
+  DatabaseIntegrityReport,
   DuplicateGroup,
   DuplicateGroupDetail,
   FileCollectionLink,
@@ -18,6 +21,7 @@ import {
   LocalAiStatus,
   OrganizationSuggestion,
   PaginatedFiles,
+  RestoreResult,
   ScanOptions,
   ScanProgress,
   ScanRoot,
@@ -1623,6 +1627,141 @@ export async function getLocalAiStatus(): Promise<LocalAiStatus> {
     status_message: "Local AI is not configured",
     model_name: null,
     allows_network: false,
+  };
+}
+
+// ── Phase 4: Local Database Backup, Restore & Integrity Checks ───────────────
+
+export async function selectBackupSavePath(): Promise<string | null> {
+  if (!isTauriEnvironment()) {
+    return "C:\\Users\\Mock\\libone_backup.libone-backup";
+  }
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const path = await saveDialog({
+      title: "Create LibOne Metadata Backup",
+      defaultPath: `libone_backup_${timestamp}.libone-backup`,
+      filters: [{ name: "LibOne Backup", extensions: ["libone-backup", "db"] }],
+    });
+    return path;
+  } catch (e) {
+    console.warn("Failed to open save dialog for backup:", e);
+    return null;
+  }
+}
+
+export async function selectBackupOpenPath(): Promise<string | null> {
+  if (!isTauriEnvironment()) {
+    return "C:\\Users\\Mock\\libone_backup.libone-backup";
+  }
+  try {
+    const selected = await openDialog({
+      title: "Select LibOne Backup File to Restore",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "LibOne Backup", extensions: ["libone-backup", "db"] }],
+    });
+    if (typeof selected === "string") return selected;
+    return null;
+  } catch (e) {
+    console.warn("Failed to open file dialog for restore:", e);
+    return null;
+  }
+}
+
+export async function createDatabaseBackup(
+  destinationPath?: string
+): Promise<BackupResult> {
+  if (isTauriEnvironment()) {
+    return await invoke<BackupResult>("create_database_backup", {
+      destinationPath: destinationPath ?? null,
+    });
+  }
+  return {
+    backup_path: destinationPath ?? "C:\\Users\\Mock\\libone_backup.libone-backup",
+    file_size_bytes: 10240,
+    sha256_hash: "mock-sha256-hash",
+    created_at: new Date().toISOString(),
+    summary: {
+      schema_version: 4,
+      total_roots: mockRoots.length,
+      total_files: mockFiles.length,
+      total_collections: mockCollections.length,
+      total_tags: mockTags.length,
+      total_notes: mockNotes.length,
+      total_suggestions: mockSuggestions.length,
+      total_duplicate_groups: mockDuplicateGroups.length,
+    },
+  };
+}
+
+export async function validateBackup(
+  backupPath: string
+): Promise<BackupValidationResult> {
+  if (isTauriEnvironment()) {
+    return await invoke<BackupValidationResult>("validate_backup", { backupPath });
+  }
+  return {
+    is_valid: true,
+    schema_version: 4,
+    summary: {
+      schema_version: 4,
+      total_roots: mockRoots.length,
+      total_files: mockFiles.length,
+      total_collections: mockCollections.length,
+      total_tags: mockTags.length,
+      total_notes: mockNotes.length,
+      total_suggestions: mockSuggestions.length,
+      total_duplicate_groups: mockDuplicateGroups.length,
+    },
+    file_size_bytes: 10240,
+    sha256_hash: "mock-sha256-hash",
+    warnings: [],
+  };
+}
+
+export async function restoreDatabase(
+  backupPath: string
+): Promise<RestoreResult> {
+  if (isTauriEnvironment()) {
+    return await invoke<RestoreResult>("restore_database", { backupPath });
+  }
+  return {
+    success: true,
+    restored_schema_version: 4,
+    safety_backup_path: "C:\\Users\\Mock\\libone_pre_restore_safety.db",
+    summary: {
+      schema_version: 4,
+      total_roots: mockRoots.length,
+      total_files: mockFiles.length,
+      total_collections: mockCollections.length,
+      total_tags: mockTags.length,
+      total_notes: mockNotes.length,
+      total_suggestions: mockSuggestions.length,
+      total_duplicate_groups: mockDuplicateGroups.length,
+    },
+  };
+}
+
+export async function checkDatabaseIntegrity(): Promise<DatabaseIntegrityReport> {
+  if (isTauriEnvironment()) {
+    return await invoke<DatabaseIntegrityReport>("check_database_integrity");
+  }
+  return {
+    is_healthy: true,
+    schema_version: 4,
+    integrity_check_passed: true,
+    foreign_key_check_passed: true,
+    missing_tables: [],
+    foreign_key_violations: [],
+    invalid_paths_count: 0,
+    missing_files_count: 0,
+    total_roots: mockRoots.length,
+    total_files: mockFiles.length,
+    total_collections: mockCollections.length,
+    total_tags: mockTags.length,
+    total_notes: mockNotes.length,
+    issues: [],
   };
 }
 

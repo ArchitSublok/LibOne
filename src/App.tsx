@@ -139,6 +139,14 @@ export const App: React.FC = () => {
     action: "add" | "remove";
   } | null>(null);
 
+  const handleLibraryRestored = () => {
+    loadRoots();
+    loadExtensions();
+    loadOrganization();
+    loadFiles();
+    refreshPendingSuggestionCount();
+  };
+
   // ── Detail view & scanner states ──────────────────────────────────────────
   const [selectedDetail, setSelectedDetail] = useState<FileDetail | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -1825,6 +1833,7 @@ export const App: React.FC = () => {
         onClose={() => setSettingsOpen(false)}
         appInfo={appInfo}
         onOpenExport={handleOpenExportModal}
+        onLibraryRestored={handleLibraryRestored}
       />
     </div>
   );

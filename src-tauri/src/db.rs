@@ -1,10 +1,12 @@
 //! The local SQLite repository. SQL is deliberately contained here, away from Tauri commands.
 
 use crate::models::{
-    BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail, DuplicateGroupFileLink,
+    BackupResult, BackupSummary, BackupValidationResult, BulkSuggestionResult, Collection,
+    DatabaseIntegrityReport, DuplicateGroup, DuplicateGroupDetail, DuplicateGroupFileLink,
     ExportSummary, FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams,
-    FileTagLink, IndexedFile, LibraryExport, NewIndexedFile, OrganizationSuggestion,
-    PaginatedFiles, ScanRoot, ScanStats, SuggestionFileLink, Tag, EXPORT_FORMAT_VERSION,
+    FileTagLink, ForeignKeyViolation, IndexedFile, IntegrityIssue, LibraryExport, NewIndexedFile,
+    OrganizationSuggestion, PaginatedFiles, RestoreResult, ScanRoot, ScanStats, SuggestionFileLink,
+    Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -28,6 +30,7 @@ impl Database {
     /// Creates app data if necessary and migrates the local metadata database transactionally.
     pub fn new<P: AsRef<Path>>(app_data_dir: P) -> Result<Self> {
         std::fs::create_dir_all(app_data_dir.as_ref()).map_err(io_error)?;
+        Self::recover_interrupted_restore(app_data_dir.as_ref())?;
         let db = Self {
             db_path: app_data_dir.as_ref().join("libone.db"),
         };
@@ -580,6 +583,523 @@ impl Database {
             suggestion_files,
             duplicate_groups,
             duplicate_group_files,
+        })
+    }
+
+    // ── Phase 4: Local Backup, Restore & Integrity Checks ────────────────────
+
+    /// Recover safely from an interrupted restore if staging or crash files exist.
+    pub fn recover_interrupted_restore(app_data_dir: &Path) -> Result<()> {
+        let db_path = app_data_dir.join("libone.db");
+        // 1. Clean up any stale staging files
+        if let Ok(entries) = std::fs::read_dir(app_data_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(".libone_restore_staging_") && name.ends_with(".tmp") {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+
+        // 2. If libone.db is missing or 0-bytes, recover from latest safety backup
+        let needs_recovery = !db_path.exists()
+            || std::fs::metadata(&db_path)
+                .map(|m| m.len() == 0)
+                .unwrap_or(true);
+
+        if needs_recovery {
+            let mut latest_backup: Option<(PathBuf, std::time::SystemTime)> = None;
+            if let Ok(entries) = std::fs::read_dir(app_data_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("libone_safety_pre_restore_") && name.ends_with(".db") {
+                            if let Ok(meta) = path.metadata() {
+                                if meta.len() > 0 {
+                                    let time = meta
+                                        .modified()
+                                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                                    if latest_backup
+                                        .as_ref()
+                                        .map(|(_, t)| time > *t)
+                                        .unwrap_or(true)
+                                    {
+                                        latest_backup = Some((path, time));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some((backup_file, _)) = latest_backup {
+                let _ = std::fs::copy(&backup_file, &db_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates an atomic local backup of the SQLite database and metadata.
+    /// Writes through a sibling temporary file and verifies integrity before replacing target.
+    /// Never includes document contents or uploads data.
+    pub fn create_backup<P: AsRef<Path>>(&self, target_path: P) -> Result<BackupResult> {
+        let target = target_path.as_ref();
+        let parent = target.parent().ok_or_else(|| {
+            rusqlite::Error::InvalidPath(PathBuf::from(
+                "Target backup path has no parent directory",
+            ))
+        })?;
+        std::fs::create_dir_all(parent).map_err(io_error)?;
+
+        // Unique sibling temp file name
+        let tmp_name = format!(
+            ".libone_backup_tmp_{}_{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let tmp_path = parent.join(&tmp_name);
+        if tmp_path.exists() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+
+        // Flush and checkpoint WAL
+        let conn = self.open()?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+
+        let tmp_str = tmp_path.to_str().ok_or_else(|| {
+            rusqlite::Error::InvalidPath(PathBuf::from("Backup path contains non-UTF8 characters"))
+        })?;
+
+        // VACUUM INTO writes directly to the temporary path
+        let vacuum_res = conn.execute("VACUUM INTO ?1", params![tmp_str]);
+        if let Err(e) = vacuum_res {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+
+        // Validate the temp file integrity
+        let val = match Self::validate_backup_file(&tmp_path) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e);
+            }
+        };
+
+        // Atomically rename temporary file to target path
+        if target.exists() {
+            let _ = std::fs::remove_file(target);
+        }
+        if let Err(_) = std::fs::rename(&tmp_path, target) {
+            // Fallback for cross-filesystem move
+            if let Err(copy_err) = std::fs::copy(&tmp_path, target) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(io_error(copy_err));
+            }
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+
+        Ok(BackupResult {
+            backup_path: target.to_string_lossy().to_string(),
+            file_size_bytes: val.file_size_bytes,
+            sha256_hash: val.sha256_hash,
+            created_at: now(),
+            summary: val.summary,
+        })
+    }
+
+    /// Validates a backup file's format, schema version, integrity, and metadata constraints
+    /// without modifying anything.
+    pub fn validate_backup_file<P: AsRef<Path>>(backup_path: P) -> Result<BackupValidationResult> {
+        let path = backup_path.as_ref();
+        if !path.exists() {
+            return Err(rusqlite::Error::InvalidPath(PathBuf::from(format!(
+                "Backup file does not exist: {}",
+                path.display()
+            ))));
+        }
+        let metadata = std::fs::metadata(path).map_err(io_error)?;
+        if metadata.len() == 0 {
+            return Err(io_error(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Backup file is empty (0 bytes)",
+            )));
+        }
+
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )?;
+
+        // 1. SQLite integrity check
+        let integrity: String = conn.query_row("PRAGMA integrity_check;", [], |r| r.get(0))?;
+        if integrity != "ok" {
+            return Err(io_error(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Corrupted backup file: database failed SQLite integrity check: {integrity}"
+                ),
+            )));
+        }
+
+        // 2. Foreign key check
+        let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check;")?;
+        let mut fk_rows = fk_stmt.query([])?;
+        let mut fk_count = 0;
+        while let Some(_) = fk_rows.next()? {
+            fk_count += 1;
+        }
+
+        // 3. Required tables check
+        let required_tables = ["library_metadata", "scan_roots", "indexed_files"];
+        for table in &required_tables {
+            if !conn_table_exists(&conn, table)? {
+                return Err(io_error(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Invalid backup: missing required metadata table '{table}'"),
+                )));
+            }
+        }
+
+        // 4. Schema version check
+        let schema_version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(schema_version), 0) FROM library_metadata",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+
+        if schema_version > SCHEMA_VERSION {
+            return Err(io_error(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Incompatible backup version: backup schema version {schema_version} is newer than current LibOne version ({SCHEMA_VERSION})"
+                ),
+            )));
+        }
+        if schema_version < 1 {
+            return Err(io_error(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid backup: schema version must be at least 1",
+            )));
+        }
+
+        // 5. Metadata-only verification: ensure no document content columns exist in indexed_files
+        let mut col_stmt = conn.prepare("PRAGMA table_info(indexed_files);")?;
+        let cols: Vec<String> = col_stmt
+            .query_map([], |r| r.get(1))?
+            .collect::<Result<Vec<String>>>()?;
+        for forbidden in &["content", "raw_data", "file_body", "binary_content"] {
+            if cols.iter().any(|c| c.eq_ignore_ascii_case(forbidden)) {
+                return Err(io_error(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Backup violation: indexed_files contains prohibited content column '{forbidden}'"),
+                )));
+            }
+        }
+
+        // 6. Summary counts & SHA-256
+        let summary = Self::read_summary_from_conn(&conn)?;
+
+        let file_bytes = std::fs::read(path).map_err(io_error)?;
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&file_bytes);
+        let hash_str = format!("{:x}", hasher.finalize());
+
+        let mut warnings = Vec::new();
+        if fk_count > 0 {
+            warnings.push(format!(
+                "{fk_count} foreign key inconsistency warning(s) detected in backup."
+            ));
+        }
+
+        Ok(BackupValidationResult {
+            is_valid: true,
+            schema_version,
+            summary,
+            file_size_bytes: metadata.len(),
+            sha256_hash: hash_str,
+            warnings,
+        })
+    }
+
+    /// Read metadata summary counts from a connection
+    fn read_summary_from_conn(conn: &Connection) -> Result<BackupSummary> {
+        let schema_version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(schema_version), 0) FROM library_metadata",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+
+        let total_roots: usize = conn
+            .query_row("SELECT count(*) FROM scan_roots", [], |r| r.get(0))
+            .unwrap_or(0);
+        let total_files: usize = conn
+            .query_row("SELECT count(*) FROM indexed_files", [], |r| r.get(0))
+            .unwrap_or(0);
+        let total_collections: usize = if conn_table_exists(conn, "collections")? {
+            conn.query_row("SELECT count(*) FROM collections", [], |r| r.get(0))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let total_tags: usize = if conn_table_exists(conn, "tags")? {
+            conn.query_row("SELECT count(*) FROM tags", [], |r| r.get(0))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let total_notes: usize = if conn_table_exists(conn, "file_notes")? {
+            conn.query_row("SELECT count(*) FROM file_notes", [], |r| r.get(0))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let total_suggestions: usize = if conn_table_exists(conn, "organization_suggestions")? {
+            conn.query_row("SELECT count(*) FROM organization_suggestions", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0)
+        } else {
+            0
+        };
+        let total_duplicate_groups: usize = if conn_table_exists(conn, "duplicate_groups")? {
+            conn.query_row("SELECT count(*) FROM duplicate_groups", [], |r| r.get(0))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        Ok(BackupSummary {
+            schema_version,
+            total_roots,
+            total_files,
+            total_collections,
+            total_tags,
+            total_notes,
+            total_suggestions,
+            total_duplicate_groups,
+        })
+    }
+
+    /// Restores the metadata database from a verified backup.
+    /// Creates a safety backup of the current database before replacing anything.
+    /// Rolls back cleanly to the safety backup on any failure during replacement.
+    /// Never modifies user document files on disk.
+    pub fn restore_from_backup<P: AsRef<Path>>(&self, backup_path: P) -> Result<RestoreResult> {
+        let path = backup_path.as_ref();
+        // 1. Validate backup before replacing anything
+        Self::validate_backup_file(path)?;
+
+        let app_data_dir = self.db_path.parent().ok_or_else(|| {
+            rusqlite::Error::InvalidPath(PathBuf::from("Database path has no parent directory"))
+        })?;
+
+        // 2. Flush current DB and create safety backup
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+        let safety_path = app_data_dir.join(format!("libone_safety_pre_restore_{timestamp}.db"));
+        self.create_backup(&safety_path)?;
+
+        // 3. Stage the restored database in a temporary file
+        let staging_path = app_data_dir.join(format!(".libone_restore_staging_{timestamp}.tmp"));
+        if staging_path.exists() {
+            let _ = std::fs::remove_file(&staging_path);
+        }
+        std::fs::copy(path, &staging_path).map_err(io_error)?;
+
+        // Verify staging file
+        if let Err(e) = Self::validate_backup_file(&staging_path) {
+            let _ = std::fs::remove_file(&staging_path);
+            return Err(e);
+        }
+
+        // 4. Close/checkpoint active WAL and replace database
+        {
+            let conn = self.open()?;
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+        let wal_path = self.db_path.with_extension("db-wal");
+        let shm_path = self.db_path.with_extension("db-shm");
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_file(&shm_path);
+
+        // Atomically replace self.db_path with staging_path
+        if let Err(_) = std::fs::rename(&staging_path, &self.db_path) {
+            if let Err(copy_err) = std::fs::copy(&staging_path, &self.db_path) {
+                // Rollback to safety backup immediately
+                let _ = std::fs::copy(&safety_path, &self.db_path);
+                let _ = std::fs::remove_file(&staging_path);
+                return Err(io_error(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Restore failed and was rolled back to safety backup: {copy_err}"),
+                )));
+            }
+            let _ = std::fs::remove_file(&staging_path);
+        }
+
+        // 5. Migrate restored database if needed (e.g. from v1, v2, v3 to v4)
+        self.migrate()?;
+
+        // 6. Read summary from restored database
+        let restored_conn = self.open()?;
+        let summary = Self::read_summary_from_conn(&restored_conn)?;
+
+        Ok(RestoreResult {
+            success: true,
+            restored_schema_version: summary.schema_version,
+            safety_backup_path: safety_path.to_string_lossy().to_string(),
+            summary,
+        })
+    }
+
+    /// Performs complete database integrity diagnostics:
+    /// - SQLite B-Tree & page consistency check
+    /// - Foreign key referential integrity
+    /// - Metadata schema & required tables verification
+    /// - Path validity and missing-file diagnostics
+    /// Provides actionable repair guidance without deleting records.
+    pub fn check_integrity(&self) -> Result<DatabaseIntegrityReport> {
+        let conn = self.open()?;
+        let mut issues: Vec<IntegrityIssue> = Vec::new();
+
+        // 1. SQLite PRAGMA integrity_check
+        let integrity_str: String = conn.query_row("PRAGMA integrity_check;", [], |r| r.get(0))?;
+        let integrity_check_passed = integrity_str == "ok";
+        if !integrity_check_passed {
+            issues.push(IntegrityIssue {
+                severity: "error".into(),
+                category: "sqlite".into(),
+                message: format!("SQLite page integrity check failed: {integrity_str}"),
+                repair_guidance: "Database file corruption detected. Restore from a recent valid local backup or export your metadata.".into(),
+            });
+        }
+
+        // 2. SQLite PRAGMA foreign_key_check
+        let mut fk_violations = Vec::new();
+        let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check;")?;
+        let mut fk_rows = fk_stmt.query([])?;
+        while let Some(row) = fk_rows.next()? {
+            fk_violations.push(ForeignKeyViolation {
+                table_name: row.get(0)?,
+                rowid: row.get(1)?,
+                referenced_table: row.get(2)?,
+                foreign_key_index: row.get(3)?,
+            });
+        }
+        let foreign_key_check_passed = fk_violations.is_empty();
+        if !foreign_key_check_passed {
+            issues.push(IntegrityIssue {
+                severity: "warning".into(),
+                category: "foreign_key".into(),
+                message: format!("{} broken foreign key association(s) detected in metadata.", fk_violations.len()),
+                repair_guidance: "Some tag, collection, or suggestion links reference deleted items. Re-scan library folders or update tags in LibOne to reconcile associations without data loss.".into(),
+            });
+        }
+
+        // 3. Schema & table presence check
+        let required_tables = [
+            "library_metadata",
+            "schema_migrations",
+            "scan_roots",
+            "indexed_files",
+            "collections",
+            "tags",
+            "file_collections",
+            "file_tags",
+            "file_notes",
+            "organization_suggestions",
+            "suggestion_files",
+            "suggestion_tags",
+            "suggestion_collections",
+            "duplicate_groups",
+            "duplicate_group_files",
+        ];
+        let mut missing_tables = Vec::new();
+        for table in &required_tables {
+            if !conn_table_exists(&conn, table)? {
+                missing_tables.push(table.to_string());
+            }
+        }
+        if !missing_tables.is_empty() {
+            issues.push(IntegrityIssue {
+                severity: "error".into(),
+                category: "schema".into(),
+                message: format!("Missing required metadata table(s): {}", missing_tables.join(", ")),
+                repair_guidance: "Schema is incomplete. Restore from a valid local backup to reconstruct missing tables without losing records.".into(),
+            });
+        }
+
+        // 4. Invalid paths check
+        let invalid_root_paths: usize = conn
+            .query_row(
+                "SELECT count(*) FROM scan_roots WHERE length(trim(absolute_path)) = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let invalid_file_paths: usize = conn
+            .query_row(
+                "SELECT count(*) FROM indexed_files WHERE length(trim(absolute_path)) = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let invalid_paths_count = invalid_root_paths + invalid_file_paths;
+        if invalid_paths_count > 0 {
+            issues.push(IntegrityIssue {
+                severity: "warning".into(),
+                category: "paths".into(),
+                message: format!("{invalid_paths_count} record(s) contain empty or invalid paths."),
+                repair_guidance:
+                    "Trigger a folder scan in Folders view to re-index current file paths.".into(),
+            });
+        }
+
+        // 5. Missing files on disk check
+        let missing_files_count: usize = conn
+            .query_row(
+                "SELECT count(*) FROM indexed_files WHERE status = 'missing'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if missing_files_count > 0 {
+            issues.push(IntegrityIssue {
+                severity: "info".into(),
+                category: "missing_files".into(),
+                message: format!("{missing_files_count} file(s) are currently marked as missing on disk."),
+                repair_guidance: "Files may be on a disconnected drive or were moved. Reconnect storage or run a scan to update statuses. LibOne will never automatically delete user records.".into(),
+            });
+        }
+
+        // 6. Summary counts
+        let summary = Self::read_summary_from_conn(&conn)?;
+        let is_healthy = issues.iter().all(|i| i.severity == "info");
+
+        Ok(DatabaseIntegrityReport {
+            is_healthy,
+            schema_version: summary.schema_version,
+            integrity_check_passed,
+            foreign_key_check_passed,
+            missing_tables,
+            foreign_key_violations: fk_violations,
+            invalid_paths_count,
+            missing_files_count,
+            total_roots: summary.total_roots,
+            total_files: summary.total_files,
+            total_collections: summary.total_collections,
+            total_tags: summary.total_tags,
+            total_notes: summary.total_notes,
+            issues,
         })
     }
 
@@ -1845,6 +2365,17 @@ fn create_schema(tx: &Transaction<'_>) -> Result<()> {
 
 fn table_exists(tx: &Transaction<'_>, name: &str) -> Result<bool> {
     Ok(tx
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+            params![name],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn conn_table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn
         .query_row(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
             params![name],
@@ -3504,6 +4035,328 @@ mod tests {
             })
             .unwrap();
         assert_eq!(deduped.total, 3);
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn test_backup_valid_creates_atomic_sqlite_backup() {
+        let (d, p) = db();
+        let root_dir = p.join("test_root");
+        std::fs::create_dir_all(&root_dir).unwrap();
+        let r = d
+            .add_scan_root(root_dir.to_str().unwrap(), "Test Root")
+            .unwrap();
+
+        let doc_path = root_dir.join("sample.pdf");
+        std::fs::write(&doc_path, b"dummy pdf content").unwrap();
+
+        let f = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: doc_path.to_str().unwrap().into(),
+                normalized_path: normalize(doc_path.to_str().unwrap()),
+                file_name: "sample.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 17,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let col = d.create_collection("Research", None, None).unwrap();
+        d.add_file_to_collection(f.id, col.id).unwrap();
+
+        let tag = d.create_tag("Priority", None).unwrap();
+        d.add_file_to_tag(f.id, tag.id).unwrap();
+
+        d.create_file_note(f.id, "Important test note").unwrap();
+
+        let backup_dir = p.join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let backup_file = backup_dir.join("libone_test_backup.db");
+
+        // Execute backup
+        let backup_res = d.create_backup(&backup_file).unwrap();
+        assert_eq!(
+            backup_res.backup_path,
+            backup_file.to_string_lossy().to_string()
+        );
+        assert!(backup_res.file_size_bytes > 0);
+        assert_eq!(backup_res.summary.total_files, 1);
+        assert_eq!(backup_res.summary.total_collections, 1);
+        assert_eq!(backup_res.summary.total_tags, 1);
+        assert_eq!(backup_res.summary.total_notes, 1);
+        assert_eq!(backup_res.summary.total_roots, 1);
+
+        // Verify validation succeeds
+        let validation = Database::validate_backup_file(&backup_file).unwrap();
+        assert!(validation.is_valid);
+        assert_eq!(validation.schema_version, 4);
+        assert_eq!(validation.summary.total_files, 1);
+        assert_eq!(validation.summary.total_collections, 1);
+        assert_eq!(validation.summary.total_tags, 1);
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn test_backup_corrupt_rejected_by_validation() {
+        let (_d, p) = db();
+        let corrupt_path = p.join("corrupt_backup.db");
+        std::fs::write(
+            &corrupt_path,
+            b"NOT A VALID SQLITE DATABASE FILE HEADER JUNK BYTES",
+        )
+        .unwrap();
+
+        let val = Database::validate_backup_file(&corrupt_path);
+        assert!(
+            val.is_err(),
+            "Corrupt backup must be rejected by validation"
+        );
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn test_backup_incompatible_version_rejected() {
+        let (_d, p) = db();
+        let future_backup_path = p.join("future_schema_backup.db");
+
+        // Create a valid SQLite db with incompatible schema version 999
+        {
+            let conn = Connection::open(&future_backup_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE library_metadata (
+                    id INTEGER PRIMARY KEY,
+                    schema_version INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO library_metadata (id, schema_version, created_at) VALUES (1, 999, '2026-11-24');
+                CREATE TABLE scan_roots (id INTEGER PRIMARY KEY);
+                CREATE TABLE indexed_files (id INTEGER PRIMARY KEY);
+                CREATE TABLE collections (id INTEGER PRIMARY KEY);
+                CREATE TABLE tags (id INTEGER PRIMARY KEY);
+                CREATE TABLE file_collections (file_id INTEGER, collection_id INTEGER);
+                CREATE TABLE file_tags (file_id INTEGER, tag_id INTEGER);
+                CREATE TABLE file_notes (file_id INTEGER PRIMARY KEY);
+                "
+            ).unwrap();
+        }
+
+        let val = Database::validate_backup_file(&future_backup_path);
+        assert!(val.is_err(), "Incompatible backup version must be rejected");
+        let reason = val.unwrap_err().to_string();
+        assert!(
+            reason.contains("Incompatible") || reason.contains("999"),
+            "Expected incompatible schema version message, got: {reason}"
+        );
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn test_backup_interrupted_write_cleans_up_and_fails_safely() {
+        let (d, p) = db();
+        // Point to an invalid target directory where parent cannot be created
+        let bad_target = PathBuf::from("Z:\\non_existent_drive_libone\\backup.db");
+
+        let res = d.create_backup(&bad_target);
+        assert!(res.is_err(), "Expected backup to fail on non-existent path");
+        assert!(!bad_target.exists());
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn test_restore_valid_backup_and_metadata_only_guarantee() {
+        let (d1, p1) = db();
+        let (d2, p2) = db();
+
+        // 1. Create a root and physical file
+        let doc_dir = p1.join("user_documents");
+        std::fs::create_dir_all(&doc_dir).unwrap();
+        let doc_path = doc_dir.join("financial_report.pdf");
+        let original_doc_bytes = b"SECRET USER REPORT CONTENT - NEVER COPY TO DB OR MODIFY";
+        std::fs::write(&doc_path, original_doc_bytes).unwrap();
+        let original_mtime = std::fs::metadata(&doc_path).unwrap().modified().unwrap();
+
+        // Register in DB 1
+        let r1 = d1
+            .add_scan_root(doc_dir.to_str().unwrap(), "User Docs")
+            .unwrap();
+        let f1 = d1
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r1.id,
+                absolute_path: doc_path.to_str().unwrap().into(),
+                normalized_path: normalize(doc_path.to_str().unwrap()),
+                file_name: "financial_report.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: original_doc_bytes.len() as i64,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "indexed".into(),
+            })
+            .unwrap();
+
+        let col1 = d1.create_collection("Finance", None, None).unwrap();
+        d1.add_file_to_collection(f1.id, col1.id).unwrap();
+
+        let tag1 = d1.create_tag("Confidential", None).unwrap();
+        d1.add_file_to_tag(f1.id, tag1.id).unwrap();
+
+        d1.create_file_note(f1.id, "Financial note 2026").unwrap();
+
+        // 2. Create backup of DB 1
+        let backup_file = p1.join("db1_backup.db");
+        d1.create_backup(&backup_file).unwrap();
+
+        // 3. Restore into DB 2
+        let restore_res = d2.restore_from_backup(&backup_file).unwrap();
+        assert_eq!(restore_res.summary.total_files, 1);
+        assert_eq!(restore_res.summary.total_collections, 1);
+        assert_eq!(restore_res.summary.total_tags, 1);
+        assert_eq!(restore_res.summary.total_notes, 1);
+
+        // 4. Verify DB 2 now has the restored metadata
+        let cols = d2.list_collections().unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(cols[0].name, "Finance");
+
+        let tags = d2.list_tags().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "Confidential");
+
+        let detail = d2.get_file_detail(f1.id).unwrap().unwrap();
+        assert_eq!(detail.file.file_name, "financial_report.pdf");
+        let notes = d2.list_file_notes(f1.id).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].note_text, "Financial note 2026");
+
+        // 5. Verify METADATA-ONLY guarantee:
+        // Physical user file was never modified or touched
+        let current_bytes = std::fs::read(&doc_path).unwrap();
+        assert_eq!(current_bytes, original_doc_bytes);
+        let current_mtime = std::fs::metadata(&doc_path).unwrap().modified().unwrap();
+        assert_eq!(current_mtime, original_mtime);
+
+        // Verify SQLite database stores no content blobs
+        let conn2 = d2.open().unwrap();
+        let column_names: Vec<String> = conn2
+            .prepare("PRAGMA table_info(indexed_files)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!column_names.contains(&"content".to_string()));
+        assert!(!column_names.contains(&"data".to_string()));
+        assert!(!column_names.contains(&"body".to_string()));
+        drop(conn2);
+
+        std::fs::remove_dir_all(p1).unwrap();
+        std::fs::remove_dir_all(p2).unwrap();
+    }
+
+    #[test]
+    fn test_restore_rollback_on_failure_preserves_original_database() {
+        let (d, p) = db();
+        let root_dir = p.join("keep_root");
+        std::fs::create_dir_all(&root_dir).unwrap();
+        let r = d
+            .add_scan_root(root_dir.to_str().unwrap(), "Keep Root")
+            .unwrap();
+
+        // Attempt restore from an invalid/corrupt file
+        let corrupt_file = p.join("corrupt.db");
+        std::fs::write(&corrupt_file, b"corrupted header").unwrap();
+
+        let restore_res = d.restore_from_backup(&corrupt_file);
+        assert!(restore_res.is_err(), "Corrupt backup restore must fail");
+
+        // Verify original database is completely intact and accessible
+        let roots = d.list_scan_roots().unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].id, r.id);
+
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn test_integrity_check_detects_issues_without_deleting_records() {
+        let (d, p) = db();
+        let root_dir = p.join("integ_root");
+        std::fs::create_dir_all(&root_dir).unwrap();
+        let r = d
+            .add_scan_root(root_dir.to_str().unwrap(), "Integ Root")
+            .unwrap();
+
+        // Register a file whose path does not exist on disk
+        let missing_path = root_dir.join("missing_doc.txt");
+        let f = d
+            .insert_indexed_file(&NewIndexedFile {
+                scan_root_id: r.id,
+                absolute_path: missing_path.to_str().unwrap().into(),
+                normalized_path: normalize(missing_path.to_str().unwrap()),
+                file_name: "missing_doc.txt".into(),
+                extension: "txt".into(),
+                size_bytes: 100,
+                modified_at: None,
+                created_at_if_available: None,
+                content_hash_nullable: None,
+                file_id_nullable: None,
+                status: "missing".into(),
+            })
+            .unwrap();
+
+        // Insert foreign key violation with PRAGMA foreign_keys = OFF
+        {
+            let conn = d.open().unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 INSERT INTO file_tags (file_id, tag_id, created_at) VALUES (999999, 888888, datetime('now'));
+                 PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+        }
+
+        // Run integrity check
+        let report = d.check_integrity().unwrap();
+        assert!(!report.is_healthy, "Expected database to report issues");
+        assert_eq!(report.missing_files_count, 1);
+        assert_eq!(report.foreign_key_violations.len(), 2);
+        assert_eq!(report.foreign_key_violations[0].table_name, "file_tags");
+
+        // Verify actionable repair guidance is provided
+        assert!(!report.issues.is_empty());
+        let has_missing_file_issue = report.issues.iter().any(|i| i.category == "missing_files");
+        let has_fk_issue = report.issues.iter().any(|i| i.category == "foreign_key");
+        assert!(
+            has_missing_file_issue,
+            "Expected missing file issue in report"
+        );
+        assert!(has_fk_issue, "Expected FK violation issue in report");
+
+        // Ensure records are NOT deleted
+        let conn = d.open().unwrap();
+        let fk_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_tags WHERE file_id = 999999",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fk_count, 1, "Foreign key violation row must not be deleted");
+
+        let file_exists = d.get_file_detail(f.id).unwrap().is_some();
+        assert!(file_exists, "Missing file record must not be deleted");
+        drop(conn);
 
         std::fs::remove_dir_all(p).unwrap();
     }

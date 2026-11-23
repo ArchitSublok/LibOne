@@ -112,6 +112,11 @@ pub fn run() {
             commands::bulk_reject_suggestions,
             commands::generate_suggestions,
             commands::get_local_ai_status,
+            // Phase 4: Local Backup, Restore & Integrity Checks
+            commands::create_database_backup,
+            commands::validate_backup,
+            commands::restore_database,
+            commands::check_database_integrity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibOne application");

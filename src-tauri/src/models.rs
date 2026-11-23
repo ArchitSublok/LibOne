@@ -294,3 +294,78 @@ pub struct BulkSuggestionResult {
     pub failed_ids: Vec<i64>,
     pub errors: Vec<String>,
 }
+
+// ── Phase 4: Backup, Restore & Integrity Diagnostics ────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackupSummary {
+    pub schema_version: i64,
+    pub total_roots: usize,
+    pub total_files: usize,
+    pub total_collections: usize,
+    pub total_tags: usize,
+    pub total_notes: usize,
+    pub total_suggestions: usize,
+    pub total_duplicate_groups: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackupResult {
+    pub backup_path: String,
+    pub file_size_bytes: u64,
+    pub sha256_hash: String,
+    pub created_at: String,
+    pub summary: BackupSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackupValidationResult {
+    pub is_valid: bool,
+    pub schema_version: i64,
+    pub summary: BackupSummary,
+    pub file_size_bytes: u64,
+    pub sha256_hash: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RestoreResult {
+    pub success: bool,
+    pub restored_schema_version: i64,
+    pub safety_backup_path: String,
+    pub summary: BackupSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ForeignKeyViolation {
+    pub table_name: String,
+    pub rowid: i64,
+    pub referenced_table: String,
+    pub foreign_key_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IntegrityIssue {
+    pub severity: String, // "info" | "warning" | "error"
+    pub category: String, // "sqlite" | "schema" | "foreign_key" | "paths" | "missing_files"
+    pub message: String,
+    pub repair_guidance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DatabaseIntegrityReport {
+    pub is_healthy: bool,
+    pub schema_version: i64,
+    pub integrity_check_passed: bool,
+    pub foreign_key_check_passed: bool,
+    pub missing_tables: Vec<String>,
+    pub foreign_key_violations: Vec<ForeignKeyViolation>,
+    pub invalid_paths_count: usize,
+    pub missing_files_count: usize,
+    pub total_roots: usize,
+    pub total_files: usize,
+    pub total_collections: usize,
+    pub total_tags: usize,
+    pub total_notes: usize,
+    pub issues: Vec<IntegrityIssue>,
+}

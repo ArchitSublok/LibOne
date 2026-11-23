@@ -119,3 +119,19 @@ This document transparently records the architectural constraints, platform-spec
 - **No API Keys or Accounts**: LibOne requires no API tokens, accounts, subscription setups, or external registrations.
 - **No Model Downloads**: The application does not perform automatic or background model downloads.
 - **Code Isolation**: All AI provider structures are quarantined behind the `intelligence.rs` module boundary, ensuring zero impact on core library indexing, searching, or scanning performance.
+
+---
+
+## 6. Phase 4 Backup, Restore, and Integrity Verification
+
+### 6.1 Metadata-Only Backups
+- Database backups created by LibOne contain only SQLite metadata (roots, file indices, tags, collections, notes, suggestions, and duplicate groupings).
+- Original document files on disk are **never** included in the backup archive. A database restore does not restore or recover deleted user files from disk.
+
+### 6.2 Pre-Restore Safety Snapshots
+- Prior to restoring any backup, LibOne writes a timestamped safety copy (`libone_safety_pre_restore_*.db`) into `%APPDATA%\com.libone.app\`.
+- These safety snapshots are kept locally for user recovery and must be cleaned up manually if disk space is constrained.
+
+### 6.3 Missing Files & Inaccessible Paths in Integrity Diagnostics
+- Integrity checks flag registered files that no longer exist at their recorded absolute paths (e.g. disconnected USB drives or moved directories).
+- LibOne reports these diagnostics with actionable repair guidance but **never silently deletes or purges** records, preserving user organization, notes, and tags until the user explicitly resolves the root or scans.

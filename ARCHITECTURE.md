@@ -386,3 +386,30 @@ pub trait LocalIntelligenceProvider: Send + Sync {
    > **“Local AI is not configured”**  
    and the application functions seamlessly using purely deterministic metadata analysis.
 6. **Code Isolation**: All intelligence provider interfaces and status structures are strictly segregated in `src-tauri/src/intelligence.rs`, preventing coupling with SQLite persistence or scanner routines.
+
+---
+
+## 12. Local Backup, Restore, and Integrity Verification Architecture
+
+Phase 4 introduces robust local database backup, validation, safety snapshots, atomic restore, and diagnostic integrity verification.
+
+### 12.1 Local Metadata Backup
+- **SQLite `VACUUM INTO`**: Creates a clean, defragmented SQLite snapshot of `libone.db` without holding write locks or requiring WAL reconciliation.
+- **Atomic Temporary Sibling Staging**: Backups are written to `.libone_backup_tmp_<timestamp>.tmp` in the destination directory, verified, and renamed atomically into place.
+- **Metadata-Only Guarantee**: Only LibOne's SQLite database schema and records (roots, indexed files, tags, collections, notes, suggestions) are included. User document files on disk are never packaged or copied into the backup file.
+- **Zero Cloud Uploads**: The backup file is saved purely on local or user-selected storage through the native Windows save dialog.
+
+### 12.2 Safe Restore with Automatic Pre-Restore Safety Snapshot
+- **Pre-Flight Validation**: Before replacing any active database file, the selected backup is inspected:
+  - Verifies SQLite header, integrity check (`PRAGMA quick_check`), and required table existence (`library_metadata`, `scan_roots`, `files`, `collections`, `tags`, etc.).
+  - Validates schema version compatibility (must match `schema_version = 4`).
+- **Safety Backup**: LibOne automatically duplicates the current active `libone.db` to `libone_safety_pre_restore_<timestamp>.db` before performing any database replacement.
+- **Crash-Safe Staging**: The new database is staged as `libone.db.restore_staging` before atomic swap. If the process is interrupted, `recover_interrupted_restore` detects staging files on subsequent startup and safely recovers.
+- **Rollback on Error**: If any step of the replacement fails, the safety backup is automatically restored, ensuring zero data loss.
+- **Non-Destructive Invariant**: Restoring metadata never creates, deletes, moves, or alters any original document files on disk.
+
+### 12.3 Database Integrity Diagnostics & Repair Guidance
+- **PRAGMA quick_check**: Evaluates low-level B-tree and page allocation integrity.
+- **Foreign Key Violations**: Identifies orphaned records across junction tables (`file_tags`, `file_collections`, `file_notes`, `suggestion_files`, `duplicate_group_files`).
+- **Missing File Detection**: Flags registered files whose physical disk paths are missing or unreadable, without silently purging their database records.
+- **Actionable Repair Guidance**: Every detected issue provides clear non-destructive guidance (e.g. remounting an external drive, running a manual scan, or restoring from a backup) without silent record deletion.

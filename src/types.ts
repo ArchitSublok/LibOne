@@ -250,3 +250,71 @@ export interface LocalAiStatus {
   allows_network: boolean;
 }
 
+// ── Phase 4: Backup, Restore & Integrity Diagnostics ────────────────────────
+
+export interface BackupSummary {
+  schema_version: number;
+  total_roots: number;
+  total_files: number;
+  total_collections: number;
+  total_tags: number;
+  total_notes: number;
+  total_suggestions: number;
+  total_duplicate_groups: number;
+}
+
+export interface BackupResult {
+  backup_path: string;
+  file_size_bytes: number;
+  sha256_hash: string;
+  created_at: string;
+  summary: BackupSummary;
+}
+
+export interface BackupValidationResult {
+  is_valid: boolean;
+  schema_version: number;
+  summary: BackupSummary;
+  file_size_bytes: number;
+  sha256_hash: string;
+  warnings: string[];
+}
+
+export interface RestoreResult {
+  success: boolean;
+  restored_schema_version: number;
+  safety_backup_path: string;
+  summary: BackupSummary;
+}
+
+export interface ForeignKeyViolation {
+  table_name: string;
+  rowid: number;
+  referenced_table: string;
+  foreign_key_index: number;
+}
+
+export interface IntegrityIssue {
+  severity: "info" | "warning" | "error";
+  category: "sqlite" | "schema" | "foreign_key" | "paths" | "missing_files";
+  message: string;
+  repair_guidance: string;
+}
+
+export interface DatabaseIntegrityReport {
+  is_healthy: boolean;
+  schema_version: number;
+  integrity_check_passed: boolean;
+  foreign_key_check_passed: boolean;
+  missing_tables: string[];
+  foreign_key_violations: ForeignKeyViolation[];
+  invalid_paths_count: number;
+  missing_files_count: number;
+  total_roots: number;
+  total_files: number;
+  total_collections: number;
+  total_tags: number;
+  total_notes: number;
+  issues: IntegrityIssue[];
+}
+

@@ -12,10 +12,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::db::Database;
 use crate::intelligence::{DisabledLocalProvider, LocalAiStatus, LocalIntelligenceProvider};
 use crate::models::{
-    AppInfo, BulkSuggestionResult, Collection, DuplicateGroup, DuplicateGroupDetail,
-    FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink,
-    IndexedFile, LibraryExport, OrganizationSuggestion, PaginatedFiles, ScanOptions, ScanProgress,
-    ScanRoot, ScanStats, Tag, WatcherOverallStatus,
+    AppInfo, BackupResult, BackupValidationResult, BulkSuggestionResult, Collection,
+    DatabaseIntegrityReport, DuplicateGroup, DuplicateGroupDetail, FileCollectionLink,
+    FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink, IndexedFile,
+    LibraryExport, OrganizationSuggestion, PaginatedFiles, RestoreResult, ScanOptions,
+    ScanProgress, ScanRoot, ScanStats, Tag, WatcherOverallStatus,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -975,6 +976,84 @@ pub fn export_library_metadata(
     }
 
     Ok(export_data)
+}
+
+// ── Phase 4: Local Database Backup, Restore & Integrity Checks ───────────────
+
+#[tauri::command]
+pub fn create_database_backup(
+    destination_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BackupResult, String> {
+    let target = if let Some(p) = destination_path {
+        PathBuf::from(p)
+    } else {
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+        app_data_dir.join(format!("libone_backup_{timestamp}.libone-backup"))
+    };
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.create_backup(&target).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn validate_backup(backup_path: String) -> Result<BackupValidationResult, String> {
+    if backup_path.trim().is_empty() {
+        return Err("Backup path cannot be empty.".to_string());
+    }
+    let p = Path::new(&backup_path);
+    Database::validate_backup_file(p).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn restore_database(
+    backup_path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RestoreResult, String> {
+    if backup_path.trim().is_empty() {
+        return Err("Backup path cannot be empty.".to_string());
+    }
+    let p = Path::new(&backup_path);
+
+    // 1. Validate before pausing anything
+    let _ = Database::validate_backup_file(p).map_err(db_err)?;
+
+    // 2. Pause watchers during restore
+    if let Ok(mut wm) = state.watcher_manager.lock() {
+        wm.stop_all();
+    }
+
+    // 3. Acquire DB lock and execute restore
+    let (restore_res, db_clone) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let res = db.restore_from_backup(p).map_err(db_err)?;
+        (res, db.clone())
+    };
+
+    // 4. Re-initialize watchers for all enabled roots in the restored library
+    if let Ok(roots) = db_clone.list_scan_roots() {
+        if let Ok(mut wm) = state.watcher_manager.lock() {
+            for root in roots.into_iter().filter(|r| r.enabled) {
+                wm.start_watching_root(&root, db_clone.clone(), app.clone());
+            }
+        }
+    }
+
+    Ok(restore_res)
+}
+
+#[tauri::command]
+pub fn check_database_integrity(
+    state: State<'_, AppState>,
+) -> Result<DatabaseIntegrityReport, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.check_integrity().map_err(db_err)
 }
 
 // ── On-demand hashing ─────────────────────────────────────────────────────────
