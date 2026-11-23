@@ -49,6 +49,15 @@ fn val_err(e: ValidationError) -> String {
     e.to_string()
 }
 
+pub fn validate_positive_id(id: i64, entity: &str) -> Result<(), String> {
+    if id <= 0 {
+        return Err(format!(
+            "Authorization denied: Invalid ID: {entity} #{id} must be a positive integer."
+        ));
+    }
+    Ok(())
+}
+
 // ── App info ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -125,6 +134,7 @@ pub fn add_scan_root(
 
 #[tauri::command]
 pub fn remove_scan_root(root_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    validate_positive_id(root_id, "Scan root")?;
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.remove_scan_root(root_id).map_err(db_err)?;
@@ -142,6 +152,7 @@ pub fn enable_scan_root(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ScanRoot, String> {
+    validate_positive_id(root_id, "Scan root")?;
     let (root, db_clone) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -192,6 +203,7 @@ pub fn start_scan(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ScanProgress, String> {
+    validate_positive_id(root_id, "Scan root")?;
     let (db_clone, root) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let root = db
@@ -270,6 +282,7 @@ pub fn start_scan(
 /// Cancel an ongoing scan for a scan root.
 #[tauri::command]
 pub fn cancel_scan(root_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    validate_positive_id(root_id, "Scan root")?;
     let active = state.active_scans.lock().map_err(|e| e.to_string())?;
     if let Some(token) = active.get(&root_id) {
         token.store(true, Ordering::Relaxed);
@@ -283,6 +296,7 @@ pub fn get_scan_progress(
     root_id: i64,
     state: State<'_, AppState>,
 ) -> Result<Option<ScanProgress>, String> {
+    validate_positive_id(root_id, "Scan root")?;
     let progs = state.scan_progress.lock().map_err(|e| e.to_string())?;
     Ok(progs.get(&root_id).cloned())
 }
@@ -294,6 +308,7 @@ pub fn scan_root(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ScanStats, String> {
+    validate_positive_id(root_id, "Scan root")?;
     let (db_clone, root) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let root = db
@@ -411,6 +426,7 @@ pub fn get_indexed_file_detail(
     file_id: i64,
     state: State<'_, AppState>,
 ) -> Result<FileDetail, String> {
+    validate_positive_id(file_id, "File")?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_file_detail(file_id)
         .map_err(db_err)?
@@ -433,6 +449,7 @@ pub fn get_library_extensions(state: State<'_, AppState>) -> Result<Vec<String>,
 /// - Target must still exist on disk (if not, marks record as missing in SQLite).
 /// - Target must be a regular file (not directory or special device).
 pub fn validate_file_for_access(db: &Database, file_id: i64) -> Result<IndexedFile, String> {
+    validate_positive_id(file_id, "File")?;
     let file = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -453,7 +470,7 @@ pub fn validate_file_for_access(db: &Database, file_id: i64) -> Result<IndexedFi
     }
 
     // Boundary check: normalized file path must begin with normalized root path
-    let norm_file = file.normalized_path.replace('/', "\\");
+    let norm_file = file.normalized_path.replace('/', "\\").to_lowercase();
     let norm_root = root.absolute_path.replace('/', "\\").to_lowercase();
     let norm_root_trimmed = norm_root.trim_end_matches('\\');
 
@@ -562,6 +579,7 @@ pub fn open_original_file(file_id: i64, state: State<'_, AppState>) -> Result<()
 /// Uses native process argument passing (`explorer.exe /select,"<path>"`), never a shell.
 #[tauri::command]
 pub fn show_in_file_explorer(file_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    validate_positive_id(file_id, "File")?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let file = db
         .get_indexed_file(file_id)
@@ -578,6 +596,18 @@ pub fn show_in_file_explorer(file_id: i64, state: State<'_, AppState>) -> Result
             "Access denied: Containing scan root '{}' is disabled.",
             root.display_name
         ));
+    }
+
+    // Boundary check: normalized file path must begin with normalized root path
+    let norm_file = file.normalized_path.replace('/', "\\").to_lowercase();
+    let norm_root = root.absolute_path.replace('/', "\\").to_lowercase();
+    let norm_root_trimmed = norm_root.trim_end_matches('\\');
+
+    if !norm_file.starts_with(norm_root_trimmed) {
+        return Err(
+            "Security violation: Target file path is outside authorized scan root boundaries."
+                .to_string(),
+        );
     }
 
     let p = Path::new(&file.absolute_path);
@@ -952,24 +982,22 @@ pub fn export_library_metadata(
 /// Compute SHA-256 hash on demand for a single file using streaming I/O and persist it.
 #[tauri::command]
 pub fn compute_file_hash(file_id: i64, state: State<'_, AppState>) -> Result<String, String> {
-    let path_str = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let file = db
-            .get_indexed_file(file_id)
-            .map_err(db_err)?
-            .ok_or_else(|| format!("Indexed file {file_id} not found"))?;
-        file.absolute_path
-    };
+    validate_positive_id(file_id, "File")?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let file = validate_file_for_access(&db, file_id)?;
 
-    let p = Path::new(&path_str);
+    let p = Path::new(&file.absolute_path);
     if !p.exists() {
-        return Err(format!("File does not exist: {path_str}"));
+        return Err(format!("File does not exist: {}", file.absolute_path));
     }
 
-    let hash = scanner::compute_file_sha256(p)
-        .map_err(|e| format!("Failed to compute SHA-256 for '{path_str}': {e}"))?;
+    let hash = scanner::compute_file_sha256(p).map_err(|e| {
+        format!(
+            "Failed to compute SHA-256 for '{}': {e}",
+            file.absolute_path
+        )
+    })?;
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.update_file_hash(file_id, &hash).map_err(db_err)?;
 
     Ok(hash)
@@ -978,6 +1006,7 @@ pub fn compute_file_hash(file_id: i64, state: State<'_, AppState>) -> Result<Str
 // ── Helpers for Phase 2 ───────────────────────────────────────────────────────
 
 pub fn validate_file_for_organization(db: &Database, file_id: i64) -> Result<IndexedFile, String> {
+    validate_positive_id(file_id, "File")?;
     let file = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -993,6 +1022,18 @@ pub fn validate_file_for_organization(db: &Database, file_id: i64) -> Result<Ind
             "Action denied: Scan root '{}' containing file #{file_id} is disabled.",
             root.display_name
         ));
+    }
+
+    // Boundary check: normalized file path must begin with normalized root path
+    let norm_file = file.normalized_path.replace('/', "\\").to_lowercase();
+    let norm_root = root.absolute_path.replace('/', "\\").to_lowercase();
+    let norm_root_trimmed = norm_root.trim_end_matches('\\');
+
+    if !norm_file.starts_with(norm_root_trimmed) {
+        return Err(
+            "Security violation: Target file path is outside authorized scan root boundaries."
+                .to_string(),
+        );
     }
 
     Ok(file)
@@ -1035,6 +1076,7 @@ pub fn create_collection(
 }
 
 pub fn get_collection_inner(db: &Database, id: i64) -> Result<Collection, String> {
+    validate_positive_id(id, "Collection")?;
     db.get_collection(id)
         .map_err(db_err)?
         .ok_or_else(|| format!("Collection #{id} not found."))
@@ -1063,6 +1105,7 @@ pub fn update_collection_inner(
     description: Option<&str>,
     color: Option<&str>,
 ) -> Result<Collection, String> {
+    validate_positive_id(id, "Collection")?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Collection name cannot be empty.".to_string());
@@ -1097,6 +1140,7 @@ pub fn update_collection(
 }
 
 pub fn delete_collection_inner(db: &Database, id: i64) -> Result<(), String> {
+    validate_positive_id(id, "Collection")?;
     let _ = db
         .get_collection(id)
         .map_err(db_err)?
@@ -1134,6 +1178,7 @@ pub fn create_tag(
 }
 
 pub fn get_tag_inner(db: &Database, id: i64) -> Result<Tag, String> {
+    validate_positive_id(id, "Tag")?;
     db.get_tag(id)
         .map_err(db_err)?
         .ok_or_else(|| format!("Tag #{id} not found."))
@@ -1161,6 +1206,7 @@ pub fn update_tag_inner(
     name: &str,
     color: Option<&str>,
 ) -> Result<Tag, String> {
+    validate_positive_id(id, "Tag")?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Tag name cannot be empty.".to_string());
@@ -1191,6 +1237,7 @@ pub fn update_tag(
 }
 
 pub fn delete_tag_inner(db: &Database, id: i64) -> Result<(), String> {
+    validate_positive_id(id, "Tag")?;
     let _ = db
         .get_tag(id)
         .map_err(db_err)?
@@ -1212,6 +1259,7 @@ pub fn add_file_to_collection_inner(
     collection_id: i64,
 ) -> Result<FileCollectionLink, String> {
     validate_file_for_organization(db, file_id)?;
+    validate_positive_id(collection_id, "Collection")?;
     let _ = db
         .get_collection(collection_id)
         .map_err(db_err)?
@@ -1236,6 +1284,7 @@ pub fn remove_file_from_collection_inner(
     collection_id: i64,
 ) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
+    validate_positive_id(collection_id, "Collection")?;
     db.remove_file_from_collection(file_id, collection_id)
         .map_err(db_err)
 }
@@ -1251,6 +1300,7 @@ pub fn remove_file_from_collection(
 }
 
 pub fn list_file_collections_inner(db: &Database, file_id: i64) -> Result<Vec<Collection>, String> {
+    validate_positive_id(file_id, "File")?;
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1274,6 +1324,7 @@ pub fn bulk_add_file_collections_inner(
 ) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
     for &cid in collection_ids {
+        validate_positive_id(cid, "Collection")?;
         if db.get_collection(cid).map_err(db_err)?.is_none() {
             return Err(format!("Collection #{cid} not found."));
         }
@@ -1297,6 +1348,10 @@ pub fn bulk_remove_file_collections_inner(
     file_id: i64,
     collection_ids: &[i64],
 ) -> Result<(), String> {
+    validate_positive_id(file_id, "File")?;
+    for &cid in collection_ids {
+        validate_positive_id(cid, "Collection")?;
+    }
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1322,6 +1377,7 @@ pub fn set_file_collections_inner(
 ) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
     for &cid in collection_ids {
+        validate_positive_id(cid, "Collection")?;
         if db.get_collection(cid).map_err(db_err)?.is_none() {
             return Err(format!("Collection #{cid} not found."));
         }
@@ -1348,6 +1404,7 @@ pub fn add_file_to_tag_inner(
     tag_id: i64,
 ) -> Result<FileTagLink, String> {
     validate_file_for_organization(db, file_id)?;
+    validate_positive_id(tag_id, "Tag")?;
     let _ = db
         .get_tag(tag_id)
         .map_err(db_err)?
@@ -1367,6 +1424,7 @@ pub fn add_file_to_tag(
 
 pub fn remove_file_from_tag_inner(db: &Database, file_id: i64, tag_id: i64) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
+    validate_positive_id(tag_id, "Tag")?;
     db.remove_file_from_tag(file_id, tag_id).map_err(db_err)
 }
 
@@ -1381,6 +1439,7 @@ pub fn remove_file_from_tag(
 }
 
 pub fn list_file_tags_inner(db: &Database, file_id: i64) -> Result<Vec<Tag>, String> {
+    validate_positive_id(file_id, "File")?;
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1401,6 +1460,7 @@ pub fn bulk_add_file_tags_inner(
 ) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
     for &tid in tag_ids {
+        validate_positive_id(tid, "Tag")?;
         if db.get_tag(tid).map_err(db_err)?.is_none() {
             return Err(format!("Tag #{tid} not found."));
         }
@@ -1423,6 +1483,10 @@ pub fn bulk_remove_file_tags_inner(
     file_id: i64,
     tag_ids: &[i64],
 ) -> Result<(), String> {
+    validate_positive_id(file_id, "File")?;
+    for &tid in tag_ids {
+        validate_positive_id(tid, "Tag")?;
+    }
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1443,6 +1507,7 @@ pub fn bulk_remove_file_tags(
 pub fn set_file_tags_inner(db: &Database, file_id: i64, tag_ids: &[i64]) -> Result<(), String> {
     validate_file_for_organization(db, file_id)?;
     for &tid in tag_ids {
+        validate_positive_id(tid, "Tag")?;
         if db.get_tag(tid).map_err(db_err)?.is_none() {
             return Err(format!("Tag #{tid} not found."));
         }
@@ -1472,6 +1537,7 @@ pub fn create_file_note_inner(
     file_id: i64,
     note_text: &str,
 ) -> Result<FileNote, String> {
+    validate_positive_id(file_id, "File")?;
     let trimmed = note_text.trim();
     if trimmed.is_empty() {
         return Err("Note content cannot be empty.".to_string());
@@ -1491,6 +1557,7 @@ pub fn create_file_note(
 }
 
 pub fn get_file_note_inner(db: &Database, note_id: i64) -> Result<FileNote, String> {
+    validate_positive_id(note_id, "Note")?;
     db.get_file_note(note_id)
         .map_err(db_err)?
         .ok_or_else(|| format!("Note #{note_id} not found."))
@@ -1499,6 +1566,7 @@ pub fn get_file_note_inner(db: &Database, note_id: i64) -> Result<FileNote, Stri
 /// Applies the same disabled-root policy as collection/tag mutations by
 /// resolving the note's indexed file first.
 fn validate_note_for_organization(db: &Database, note_id: i64) -> Result<FileNote, String> {
+    validate_positive_id(note_id, "Note")?;
     let note = get_file_note_inner(db, note_id)?;
     validate_file_for_organization(db, note.file_id)?;
     Ok(note)
@@ -1511,6 +1579,7 @@ pub fn get_file_note(note_id: i64, state: State<'_, AppState>) -> Result<FileNot
 }
 
 pub fn list_file_notes_inner(db: &Database, file_id: i64) -> Result<Vec<FileNote>, String> {
+    validate_positive_id(file_id, "File")?;
     let _ = db
         .get_indexed_file(file_id)
         .map_err(db_err)?
@@ -1529,6 +1598,7 @@ pub fn update_file_note_inner(
     note_id: i64,
     note_text: &str,
 ) -> Result<FileNote, String> {
+    validate_positive_id(note_id, "Note")?;
     let trimmed = note_text.trim();
     if trimmed.is_empty() {
         return Err("Note content cannot be empty.".to_string());
@@ -1548,6 +1618,7 @@ pub fn update_file_note(
 }
 
 pub fn delete_file_note_inner(db: &Database, note_id: i64) -> Result<(), String> {
+    validate_positive_id(note_id, "Note")?;
     let _ = validate_note_for_organization(db, note_id)?;
     db.delete_file_note(note_id).map_err(db_err)
 }
@@ -1559,15 +1630,6 @@ pub fn delete_file_note(note_id: i64, state: State<'_, AppState>) -> Result<(), 
 }
 
 // ── Phase 3: Suggestions & Duplicates ────────────────────────────────────────
-
-pub fn validate_positive_id(id: i64, entity: &str) -> Result<(), String> {
-    if id <= 0 {
-        return Err(format!(
-            "Invalid ID: {entity} #{id} must be a positive integer."
-        ));
-    }
-    Ok(())
-}
 
 pub fn list_organization_suggestions_inner(
     db: &Database,
@@ -4765,6 +4827,110 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_id_validation_rejects_negative_and_zero_ids() {
+        let (db, db_dir) = test_auth_db("sec_id_val");
+
+        for &bad_id in &[0i64, -1, -500] {
+            // Roots
+            assert!(validate_positive_id(bad_id, "Scan root").is_err());
+            assert!(validate_positive_id(bad_id, "Scan root")
+                .unwrap_err()
+                .contains("must be a positive integer"));
+
+            // Files
+            assert!(validate_file_for_access(&db, bad_id).is_err());
+            assert!(validate_file_for_organization(&db, bad_id).is_err());
+            assert!(list_file_collections_inner(&db, bad_id).is_err());
+            assert!(list_file_tags_inner(&db, bad_id).is_err());
+            assert!(list_file_notes_inner(&db, bad_id).is_err());
+
+            // Collections
+            assert!(get_collection_inner(&db, bad_id).is_err());
+            assert!(update_collection_inner(&db, bad_id, "Col", None, None).is_err());
+            assert!(delete_collection_inner(&db, bad_id).is_err());
+
+            // Tags
+            assert!(get_tag_inner(&db, bad_id).is_err());
+            assert!(update_tag_inner(&db, bad_id, "Tag", None).is_err());
+            assert!(delete_tag_inner(&db, bad_id).is_err());
+
+            // Notes
+            assert!(get_file_note_inner(&db, bad_id).is_err());
+            assert!(update_file_note_inner(&db, bad_id, "Note text").is_err());
+            assert!(delete_file_note_inner(&db, bad_id).is_err());
+
+            // Suggestions
+            assert!(get_organization_suggestion_inner(&db, bad_id).is_err());
+            assert!(approve_suggestion_inner(&db, bad_id).is_err());
+            assert!(reject_suggestion_inner(&db, bad_id).is_err());
+            assert!(dismiss_suggestion_inner(&db, bad_id).is_err());
+
+            // Duplicate groups
+            assert!(get_duplicate_group_inner(&db, bad_id).is_err());
+            assert!(get_duplicate_group_detail_inner(&db, bad_id).is_err());
+            assert!(get_file_comparison_inner(&db, vec![bad_id]).is_err());
+            assert!(approve_duplicate_group_inner(&db, bad_id, None).is_err());
+            assert!(reject_duplicate_group_inner(&db, bad_id).is_err());
+            assert!(dismiss_duplicate_group_inner(&db, bad_id).is_err());
+        }
+
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_security_organization_and_explorer_boundary_enforcement() {
+        let (db, db_dir) = test_auth_db("sec_bounds");
+        let root_dir = temp_auth_dir("sec_bounds_root");
+        let outside_dir = temp_auth_dir("sec_bounds_outside");
+
+        let root = db
+            .add_scan_root(root_dir.to_str().unwrap(), "Bounds Root")
+            .unwrap();
+
+        // Create file outside scan root
+        let outside_file = outside_dir.join("outside.pdf");
+        fs::write(&outside_file, "outside content").unwrap();
+
+        let indexed = db
+            .insert_indexed_file(&crate::models::NewIndexedFile {
+                scan_root_id: root.id,
+                absolute_path: outside_file.to_str().unwrap().into(),
+                normalized_path: outside_file
+                    .to_str()
+                    .unwrap()
+                    .replace('/', "\\")
+                    .to_lowercase(),
+                file_name: "outside.pdf".into(),
+                extension: "pdf".into(),
+                size_bytes: 15,
+                modified_at: None,
+                created_at_if_available: None,
+                status: "indexed".into(),
+                content_hash_nullable: None,
+                file_id_nullable: None,
+            })
+            .unwrap();
+
+        // validate_file_for_organization must block this file
+        let org_res = validate_file_for_organization(&db, indexed.id);
+        assert!(org_res.is_err());
+        assert!(org_res
+            .unwrap_err()
+            .contains("outside authorized scan root boundaries"));
+
+        // validate_file_for_access must also block this file
+        let access_res = validate_file_for_access(&db, indexed.id);
+        assert!(access_res.is_err());
+        assert!(access_res
+            .unwrap_err()
+            .contains("outside authorized scan root boundaries"));
+
+        let _ = fs::remove_dir_all(&root_dir);
+        let _ = fs::remove_dir_all(&outside_dir);
         let _ = fs::remove_dir_all(&db_dir);
     }
 }
