@@ -44,10 +44,43 @@ impl Database {
 
     pub(crate) fn open(&self) -> Result<Connection> {
         let conn = Connection::open(&self.db_path)?;
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         conn.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY;",
         )?;
         Ok(conn)
+    }
+
+    /// Retries a database operation if SQLite returns SQLITE_BUSY or SQLITE_LOCKED.
+    pub fn with_busy_retry<F, T>(mut op: F) -> Result<T>
+    where
+        F: FnMut() -> Result<T>,
+    {
+        let mut attempts = 0;
+        loop {
+            match op() {
+                Ok(val) => return Ok(val),
+                Err(e) => {
+                    let is_busy = matches!(
+                        e,
+                        rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error {
+                                code: rusqlite::ErrorCode::DatabaseBusy
+                                    | rusqlite::ErrorCode::DatabaseLocked,
+                                ..
+                            },
+                            _
+                        )
+                    );
+                    if is_busy && attempts < 5 {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(40 * attempts));
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 
     fn migrate(&self) -> Result<()> {

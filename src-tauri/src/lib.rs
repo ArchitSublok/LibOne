@@ -118,6 +118,15 @@ pub fn run() {
             commands::restore_database,
             commands::check_database_integrity,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running LibOne application");
+        .build(tauri::generate_context!())
+        .expect("error while building LibOne application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Ok(mut wm) = state.watcher_manager.lock() {
+                        wm.stop_all();
+                    }
+                }
+            }
+        });
 }
