@@ -8,6 +8,7 @@ import {
   BulkSuggestionResult,
   Collection,
   DatabaseIntegrityReport,
+  DiagnosticsReport,
   DuplicateGroup,
   DuplicateGroupDetail,
   FileCollectionLink,
@@ -1763,6 +1764,120 @@ export async function checkDatabaseIntegrity(): Promise<DatabaseIntegrityReport>
     total_notes: mockNotes.length,
     issues: [],
   };
+}
+
+export async function promptSaveDiagnosticsPath(
+  defaultExt: "json" | "txt" = "json"
+): Promise<string | null> {
+  if (!isTauriEnvironment()) {
+    return `C:\\Users\\Mock\\libone_diagnostics.${defaultExt}`;
+  }
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const path = await saveDialog({
+      title: "Save LibOne System Diagnostics",
+      defaultPath: `libone_diagnostics_${timestamp}.${defaultExt}`,
+      filters: [
+        defaultExt === "json"
+          ? { name: "JSON File", extensions: ["json"] }
+          : { name: "Text File", extensions: ["txt"] },
+        { name: "All Supported", extensions: ["json", "txt"] },
+      ],
+    });
+    return path;
+  } catch (e) {
+    console.warn("Failed to open save dialog for diagnostics:", e);
+    return null;
+  }
+}
+
+export async function getSystemDiagnostics(): Promise<DiagnosticsReport> {
+  if (isTauriEnvironment()) {
+    return await invoke<DiagnosticsReport>("get_system_diagnostics");
+  }
+  return {
+    app_version: "0.1.0",
+    schema_version: 4,
+    db_path: "C:\\Users\\MockUser\\AppData\\Roaming\\com.libone.app\\libone.db",
+    app_data_dir: "C:\\Users\\MockUser\\AppData\\Roaming\\com.libone.app",
+    os: "windows",
+    scan_health: {
+      last_scan_started_at: new Date(Date.now() - 3600000).toISOString(),
+      last_scan_completed_at: new Date(Date.now() - 3590000).toISOString(),
+      last_scan_status: "completed",
+      enabled_roots_count: mockRoots.filter((r) => r.enabled).length,
+      disabled_roots_count: mockRoots.filter((r) => !r.enabled).length,
+      total_roots_count: mockRoots.length,
+    },
+    file_counts: {
+      indexed_files_count: mockFiles.filter((f) => f.status === "indexed").length,
+      missing_files_count: mockFiles.filter((f) => f.status === "missing").length,
+      inaccessible_files_count: mockFiles.filter((f) => f.status === "inaccessible").length,
+      error_files_count: mockFiles.filter(
+        (f) => !["indexed", "missing", "inaccessible"].includes(f.status)
+      ).length,
+      total_tracked_files: mockFiles.length,
+    },
+    watcher_health: {
+      is_watching: mockRoots.some((r) => r.enabled),
+      watched_roots_count: mockRoots.filter((r) => r.enabled).length,
+      is_coalescing: false,
+      is_refreshing: false,
+      last_refreshed_at: new Date().toISOString(),
+      root_statuses: mockRoots.map((r) => ({
+        root_id: r.id,
+        path: r.absolute_path,
+        active: r.enabled,
+        last_event_at: new Date().toISOString(),
+        error_message: null,
+      })),
+    },
+    backup_health: {
+      safety_backups_count: 2,
+      latest_safety_backup_time: new Date(Date.now() - 86400000).toISOString(),
+      latest_safety_backup_path:
+        "C:\\Users\\MockUser\\AppData\\Roaming\\com.libone.app\\libone_safety_pre_restore_mock.db",
+      status: "healthy (pre-restore safety snapshots available)",
+    },
+    integrity_report: {
+      is_healthy: true,
+      schema_version: 4,
+      integrity_check_passed: true,
+      foreign_key_check_passed: true,
+      missing_tables: [],
+      foreign_key_violations: [],
+      invalid_paths_count: 0,
+      missing_files_count: 0,
+      total_roots: mockRoots.length,
+      total_files: mockFiles.length,
+      total_collections: mockCollections.length,
+      total_tags: mockTags.length,
+      total_notes: mockNotes.length,
+      issues: [],
+    },
+    disk_space: {
+      available_bytes: 85 * 1024 * 1024 * 1024,
+      total_bytes: 512 * 1024 * 1024 * 1024,
+      free_percentage: 16.6,
+      is_low_space: false,
+      warning_message: null,
+    },
+    generated_at: new Date().toISOString(),
+  };
+}
+
+export async function saveDiagnosticsReport(
+  targetPath: string,
+  content: string
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    await invoke("save_diagnostics_report", {
+      targetPath,
+      content,
+    });
+    return;
+  }
+  console.log("Mock saved diagnostics to", targetPath, content.length, "bytes");
 }
 
 

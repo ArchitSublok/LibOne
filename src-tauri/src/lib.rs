@@ -117,6 +117,9 @@ pub fn run() {
             commands::validate_backup,
             commands::restore_database,
             commands::check_database_integrity,
+            // Phase 4: Privacy-Safe Diagnostics
+            commands::get_system_diagnostics,
+            commands::save_diagnostics_report,
         ])
         .build(tauri::generate_context!())
         .expect("error while building LibOne application")

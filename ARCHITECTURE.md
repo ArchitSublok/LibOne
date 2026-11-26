@@ -413,3 +413,19 @@ Phase 4 introduces robust local database backup, validation, safety snapshots, a
 - **Foreign Key Violations**: Identifies orphaned records across junction tables (`file_tags`, `file_collections`, `file_notes`, `suggestion_files`, `duplicate_group_files`).
 - **Missing File Detection**: Flags registered files whose physical disk paths are missing or unreadable, without silently purging their database records.
 - **Actionable Repair Guidance**: Every detected issue provides clear non-destructive guidance (e.g. remounting an external drive, running a manual scan, or restoring from a backup) without silent record deletion.
+
+---
+
+## 13. Privacy-Safe System Diagnostics Architecture
+
+Phase 4 introduces an on-demand, privacy-safe system diagnostics and health reporting facility.
+
+### 13.1 Non-Intrusive Local Inspection
+- **Strictly Metadata & System Counters**: Diagnostics inspect solely application version, SQLite schema version, database and app data directory paths, scan root enablement counts, index status counts (`indexed`, `missing`, `inaccessible`, `error`), watcher status, backup snapshot timestamps, database integrity results, and host volume disk space.
+- **Zero Document Content or Note Exposure**: Document text, body bytes, user-authored notes, API credentials, and tokens are completely excluded from diagnostic structures.
+- **Zero Cloud Uploads**: The diagnostic report is generated on-device in memory and is never transmitted over any network.
+
+### 13.2 Privacy Redaction & Local Export
+- **Path Redaction**: Built-in sanitizer redacts personal username segments in Windows (`C:\Users\<redacted>\...`) and POSIX (`/home/<redacted>/...`) paths, while preserving drive letters and relative application paths for debugging.
+- **Local Save**: Users can copy redacted or full diagnostics text to the clipboard or save locally as `.txt` or `.json` files via atomic sibling writes and native save dialogs.
+- **Disk Space Warning**: Queries native OS volume metrics (`GetDiskFreeSpaceExW` on Windows) to detect low-space conditions (< 2 GB or < 5% available) without accessing file contents.

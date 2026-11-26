@@ -40,6 +40,7 @@ interface SettingsModalProps {
   appInfo: AppInfo | null;
   onOpenExport: () => void;
   onLibraryRestored?: () => void;
+  onOpenDiagnostics?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -48,6 +49,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   appInfo,
   onOpenExport,
   onLibraryRestored,
+  onOpenDiagnostics,
 }) => {
   const [activeTab, setActiveTab] = useState<"storage" | "backup" | "integrity">("storage");
 
@@ -643,16 +645,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <div className="modal-footer" style={{ justifyContent: "space-between" }}>
-          <button
-            className="btn btn-secondary"
-            onClick={() => {
-              onClose();
-              onOpenExport();
-            }}
-            title="Export full library metadata to portable JSON"
-          >
-            <Download size={14} /> Open Metadata Export
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                onClose();
+                onOpenExport();
+              }}
+              title="Export full library metadata to portable JSON"
+            >
+              <Download size={14} /> Open Metadata Export
+            </button>
+            {onOpenDiagnostics && (
+              <button
+                className="btn btn-secondary"
+                onClick={onOpenDiagnostics}
+                title="Open comprehensive privacy-safe diagnostics report"
+              >
+                <Activity size={14} /> Full Diagnostics
+              </button>
+            )}
+          </div>
           <button className="btn btn-primary" onClick={onClose}>
             Done
           </button>

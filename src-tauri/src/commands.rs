@@ -12,11 +12,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::db::Database;
 use crate::intelligence::{DisabledLocalProvider, LocalAiStatus, LocalIntelligenceProvider};
 use crate::models::{
-    AppInfo, BackupResult, BackupValidationResult, BulkSuggestionResult, Collection,
-    DatabaseIntegrityReport, DuplicateGroup, DuplicateGroupDetail, FileCollectionLink,
-    FileComparisonItem, FileDetail, FileNote, FileQueryParams, FileTagLink, IndexedFile,
-    LibraryExport, OrganizationSuggestion, PaginatedFiles, RestoreResult, ScanOptions,
-    ScanProgress, ScanRoot, ScanStats, Tag, WatcherOverallStatus,
+    AppInfo, BackupHealthInfo, BackupResult, BackupValidationResult, BulkSuggestionResult,
+    Collection, DatabaseIntegrityReport, DiagnosticsReport, DiskSpaceInfo, DuplicateGroup,
+    DuplicateGroupDetail, FileCollectionLink, FileComparisonItem, FileDetail, FileNote,
+    FileQueryParams, FileTagLink, IndexedFile, LibraryExport, OrganizationSuggestion,
+    PaginatedFiles, RestoreResult, ScanOptions, ScanProgress, ScanRoot, ScanStats, Tag,
+    WatcherOverallStatus,
 };
 use crate::scanner;
 use crate::validate::{validate_scan_root_path, ValidationError};
@@ -1054,6 +1055,149 @@ pub fn check_database_integrity(
 ) -> Result<DatabaseIntegrityReport, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.check_integrity().map_err(db_err)
+}
+
+#[tauri::command]
+pub fn get_system_diagnostics(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DiagnosticsReport, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db_path = db.get_path();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+
+    let (scan_health, file_counts) = db.get_diagnostics_metrics().map_err(db_err)?;
+
+    let integrity_report = db.check_integrity().map_err(db_err)?;
+
+    let watcher_health = state
+        .watcher_manager
+        .lock()
+        .map(|wm| wm.get_overall_status())
+        .unwrap_or_default();
+
+    // Backup health calculation
+    let mut safety_backups_count = 0;
+    let mut latest_safety_time: Option<String> = None;
+    let mut latest_safety_path: Option<String> = None;
+    if let Ok(entries) = std::fs::read_dir(&app_data_dir) {
+        let mut latest_mtime = std::time::SystemTime::UNIX_EPOCH;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("libone_safety_pre_restore_") && name.ends_with(".db") {
+                    safety_backups_count += 1;
+                    if let Ok(meta) = path.metadata() {
+                        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if mtime > latest_mtime {
+                            latest_mtime = mtime;
+                            latest_safety_path = Some(path.to_string_lossy().to_string());
+                            let datetime: chrono::DateTime<chrono::Utc> = mtime.into();
+                            latest_safety_time = Some(datetime.to_rfc3339());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let backup_health = BackupHealthInfo {
+        safety_backups_count,
+        latest_safety_backup_time: latest_safety_time,
+        latest_safety_backup_path: latest_safety_path,
+        status: if safety_backups_count > 0 {
+            "healthy (pre-restore safety snapshots available)".into()
+        } else {
+            "healthy (primary database operational)".into()
+        },
+    };
+
+    // Disk space detection
+    let disk_space = crate::db::get_disk_free_space(&db_path).map(|(available, total)| {
+        let free_percentage = if total > 0 {
+            (available as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        let is_low_space = available < 2 * 1024 * 1024 * 1024 || free_percentage < 5.0; // < 2 GB or < 5%
+        let warning_message = if is_low_space {
+            Some(format!(
+                "Low disk space warning: Only {:.2} GB ({:.1}%) free on storage volume. Ensure sufficient space for SQLite WAL journals and exports.",
+                available as f64 / (1024.0 * 1024.0 * 1024.0),
+                free_percentage
+            ))
+        } else {
+            None
+        };
+        DiskSpaceInfo {
+            available_bytes: available,
+            total_bytes: total,
+            free_percentage,
+            is_low_space,
+            warning_message,
+        }
+    });
+
+    let app_version = app.package_info().version.to_string();
+
+    Ok(DiagnosticsReport {
+        app_version: if app_version.is_empty() {
+            "0.1.0".into()
+        } else {
+            app_version
+        },
+        schema_version: crate::db::SCHEMA_VERSION,
+        db_path: db_path.to_string_lossy().to_string(),
+        app_data_dir: app_data_dir.to_string_lossy().to_string(),
+        os: std::env::consts::OS.to_string(),
+        scan_health,
+        file_counts,
+        watcher_health,
+        backup_health,
+        integrity_report,
+        disk_space,
+        generated_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+#[tauri::command]
+pub fn save_diagnostics_report(target_path: String, content: String) -> Result<(), String> {
+    if target_path.trim().is_empty() {
+        return Err("Target path cannot be empty".into());
+    }
+    let path = PathBuf::from(&target_path);
+    if path.is_dir() {
+        return Err("Target path must be a file, not a directory".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid target path parent".to_string())?;
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create destination directory: {e}"))?;
+    }
+
+    let tmp_path = parent.join(format!(
+        ".libone_diag_{}.tmp",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    std::fs::write(&tmp_path, content.as_bytes())
+        .map_err(|e| format!("Failed to write diagnostics file: {e}"))?;
+
+    if let Err(_) = std::fs::rename(&tmp_path, &path) {
+        std::fs::copy(&tmp_path, &path)
+            .map_err(|e| format!("Failed to save diagnostics file: {e}"))?;
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    Ok(())
 }
 
 // ── On-demand hashing ─────────────────────────────────────────────────────────

@@ -3,10 +3,10 @@
 use crate::models::{
     BackupResult, BackupSummary, BackupValidationResult, BulkSuggestionResult, Collection,
     DatabaseIntegrityReport, DuplicateGroup, DuplicateGroupDetail, DuplicateGroupFileLink,
-    ExportSummary, FileCollectionLink, FileComparisonItem, FileDetail, FileNote, FileQueryParams,
-    FileTagLink, ForeignKeyViolation, IndexedFile, IntegrityIssue, LibraryExport, NewIndexedFile,
-    OrganizationSuggestion, PaginatedFiles, RestoreResult, ScanRoot, ScanStats, SuggestionFileLink,
-    Tag, EXPORT_FORMAT_VERSION,
+    ExportSummary, FileCollectionLink, FileComparisonItem, FileCountsHealthInfo, FileDetail,
+    FileNote, FileQueryParams, FileTagLink, ForeignKeyViolation, IndexedFile, IntegrityIssue,
+    LibraryExport, NewIndexedFile, OrganizationSuggestion, PaginatedFiles, RestoreResult,
+    ScanHealthInfo, ScanRoot, ScanStats, SuggestionFileLink, Tag, EXPORT_FORMAT_VERSION,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
@@ -1134,6 +1134,76 @@ impl Database {
             total_notes: summary.total_notes,
             issues,
         })
+    }
+
+    /// Reads aggregate metrics for scan roots and indexed files for the diagnostics report.
+    pub fn get_diagnostics_metrics(&self) -> Result<(ScanHealthInfo, FileCountsHealthInfo)> {
+        let conn = self.open()?;
+
+        // Scan roots health
+        let (total_roots, enabled_roots, disabled_roots, max_started, max_completed): (
+            usize,
+            usize,
+            usize,
+            Option<String>,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT 
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0),
+                MAX(last_scan_started_at),
+                MAX(last_scan_completed_at)
+             FROM scan_roots",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
+
+        let last_scan_status: Option<String> = conn
+            .query_row(
+                "SELECT last_scan_status FROM scan_roots WHERE last_scan_completed_at IS NOT NULL ORDER BY last_scan_completed_at DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let scan_health = ScanHealthInfo {
+            last_scan_started_at: max_started,
+            last_scan_completed_at: max_completed,
+            last_scan_status,
+            enabled_roots_count: enabled_roots,
+            disabled_roots_count: disabled_roots,
+            total_roots_count: total_roots,
+        };
+
+        // File counts health
+        let (indexed_count, missing_count, inaccessible_count, error_count, total_tracked): (
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+        ) = conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN status = 'indexed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'inaccessible' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status NOT IN ('indexed', 'missing', 'inaccessible') THEN 1 ELSE 0 END), 0),
+                COUNT(*)
+             FROM indexed_files",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
+
+        let file_counts = FileCountsHealthInfo {
+            indexed_files_count: indexed_count,
+            missing_files_count: missing_count,
+            inaccessible_files_count: inaccessible_count,
+            error_files_count: error_count,
+            total_tracked_files: total_tracked,
+        };
+
+        Ok((scan_health, file_counts))
     }
 
     fn roots<P: rusqlite::Params>(&self, suffix: &str, params: P) -> Result<Vec<ScanRoot>> {
@@ -2440,6 +2510,54 @@ fn now() -> String {
 
 fn io_error(error: std::io::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}
+
+/// Safely returns available and total disk bytes for the volume hosting `path`.
+#[cfg(windows)]
+pub fn get_disk_free_space(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let dir = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+
+    let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    wide.push(0);
+
+    let mut free_bytes_available: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_free_bytes: u64 = 0;
+
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpDirectoryName: *const u16,
+            lpFreeBytesAvailableToCaller: *mut u64,
+            lpTotalNumberOfBytes: *mut u64,
+            lpTotalNumberOfFreeBytes: *mut u64,
+        ) -> i32;
+    }
+
+    let ret = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_bytes_available,
+            &mut total_bytes,
+            &mut total_free_bytes,
+        )
+    };
+
+    if ret != 0 && total_bytes > 0 {
+        Some((free_bytes_available, total_bytes))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+pub fn get_disk_free_space(_path: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 #[cfg(test)]

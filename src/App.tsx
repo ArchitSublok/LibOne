@@ -71,6 +71,7 @@ import { ScanRootsPanel } from "./components/ScanRootsPanel";
 import { ScanScreen } from "./components/ScanScreen";
 import { FileDetailModal } from "./components/FileDetailModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { DiagnosticsModal } from "./components/DiagnosticsModal";
 import { CollectionModal } from "./components/CollectionModal";
 import { TagModal } from "./components/TagModal";
 import { OrganizationPanel } from "./components/OrganizationPanel";
@@ -169,6 +170,7 @@ export const App: React.FC = () => {
 
   // ── Settings modal ────────────────────────────────────────────────────────
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   // ── Export modal ──────────────────────────────────────────────────────────
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -929,6 +931,14 @@ export const App: React.FC = () => {
             title="Export library metadata to JSON"
           >
             <Download size={14} /> Export
+          </button>
+
+          <button
+            className="btn btn-secondary"
+            onClick={() => setDiagnosticsOpen(true)}
+            title="View privacy-safe diagnostics, health status, and system metrics"
+          >
+            <Activity size={14} /> Diagnostics
           </button>
 
           <button
@@ -1834,6 +1844,16 @@ export const App: React.FC = () => {
         appInfo={appInfo}
         onOpenExport={handleOpenExportModal}
         onLibraryRestored={handleLibraryRestored}
+        onOpenDiagnostics={() => {
+          setSettingsOpen(false);
+          setDiagnosticsOpen(true);
+        }}
+      />
+
+      {/* ── Diagnostics modal ──────────────────────────────────────────────── */}
+      <DiagnosticsModal
+        isOpen={diagnosticsOpen}
+        onClose={() => setDiagnosticsOpen(false)}
       />
     </div>
   );

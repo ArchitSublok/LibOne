@@ -318,3 +318,50 @@ export interface DatabaseIntegrityReport {
   issues: IntegrityIssue[];
 }
 
+export interface DiskSpaceInfo {
+  available_bytes: number;
+  total_bytes: number;
+  free_percentage: number;
+  is_low_space: boolean;
+  warning_message: string | null;
+}
+
+export interface BackupHealthInfo {
+  safety_backups_count: number;
+  latest_safety_backup_time: string | null;
+  latest_safety_backup_path: string | null;
+  status: string;
+}
+
+export interface ScanHealthInfo {
+  last_scan_started_at: string | null;
+  last_scan_completed_at: string | null;
+  last_scan_status: string | null;
+  enabled_roots_count: number;
+  disabled_roots_count: number;
+  total_roots_count: number;
+}
+
+export interface FileCountsHealthInfo {
+  indexed_files_count: number;
+  missing_files_count: number;
+  inaccessible_files_count: number;
+  error_files_count: number;
+  total_tracked_files: number;
+}
+
+export interface DiagnosticsReport {
+  app_version: string;
+  schema_version: number;
+  db_path: string;
+  app_data_dir: string;
+  os: string;
+  scan_health: ScanHealthInfo;
+  file_counts: FileCountsHealthInfo;
+  watcher_health: WatcherOverallStatus;
+  backup_health: BackupHealthInfo;
+  integrity_report: DatabaseIntegrityReport;
+  disk_space: DiskSpaceInfo | null;
+  generated_at: string;
+}
+

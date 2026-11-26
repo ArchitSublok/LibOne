@@ -135,3 +135,8 @@ This document transparently records the architectural constraints, platform-spec
 ### 6.3 Missing Files & Inaccessible Paths in Integrity Diagnostics
 - Integrity checks flag registered files that no longer exist at their recorded absolute paths (e.g. disconnected USB drives or moved directories).
 - LibOne reports these diagnostics with actionable repair guidance but **never silently deletes or purges** records, preserving user organization, notes, and tags until the user explicitly resolves the root or scans.
+
+### 6.4 Privacy-Safe Diagnostics Scope
+- Diagnostics inspect filesystem paths, schema versions, watcher health, and index counters only. Original document contents, user notes, passwords, and tokens are never read, stored, or transmitted.
+- Disk-space detection is scoped to the volume hosting the SQLite database. Separate physical drives for secondary scan roots are not probed if unmounted.
+- Redaction sanitizes standard user profile directory patterns (`C:\Users\<user>`); custom directory structures outside standard user profiles remain unredacted unless the user chooses to review/edit before sharing.

@@ -121,7 +121,7 @@ pub struct FileDetail {
     pub exists_on_disk: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WatcherRootStatus {
     pub root_id: i64,
     pub path: String,
@@ -130,7 +130,7 @@ pub struct WatcherRootStatus {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct WatcherOverallStatus {
     pub is_watching: bool,
     pub watched_roots_count: usize,
@@ -368,4 +368,56 @@ pub struct DatabaseIntegrityReport {
     pub total_tags: usize,
     pub total_notes: usize,
     pub issues: Vec<IntegrityIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiskSpaceInfo {
+    pub available_bytes: u64,
+    pub total_bytes: u64,
+    pub free_percentage: f64,
+    pub is_low_space: bool,
+    pub warning_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackupHealthInfo {
+    pub safety_backups_count: usize,
+    pub latest_safety_backup_time: Option<String>,
+    pub latest_safety_backup_path: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScanHealthInfo {
+    pub last_scan_started_at: Option<String>,
+    pub last_scan_completed_at: Option<String>,
+    pub last_scan_status: Option<String>,
+    pub enabled_roots_count: usize,
+    pub disabled_roots_count: usize,
+    pub total_roots_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileCountsHealthInfo {
+    pub indexed_files_count: usize,
+    pub missing_files_count: usize,
+    pub inaccessible_files_count: usize,
+    pub error_files_count: usize,
+    pub total_tracked_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiagnosticsReport {
+    pub app_version: String,
+    pub schema_version: i64,
+    pub db_path: String,
+    pub app_data_dir: String,
+    pub os: String,
+    pub scan_health: ScanHealthInfo,
+    pub file_counts: FileCountsHealthInfo,
+    pub watcher_health: WatcherOverallStatus,
+    pub backup_health: BackupHealthInfo,
+    pub integrity_report: DatabaseIntegrityReport,
+    pub disk_space: Option<DiskSpaceInfo>,
+    pub generated_at: String,
 }
