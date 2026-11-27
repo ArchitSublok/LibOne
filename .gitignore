@@ -39,6 +39,22 @@ local_data/
 Thumbs.db
 desktop.ini
 
+# Code signing certificates and keys (strictly excluded)
+*.pfx
+*.p12
+*.key
+*.pem
+*.cer
+*.crt
+*.sig
+*.snk
+
+# Release output directories and archives
+release_artifacts/
+*.msi
+*.exe.zip
+*.tar.gz
+
 # IDE and Editor directories
 .vscode/*
 !.vscode/extensions.json

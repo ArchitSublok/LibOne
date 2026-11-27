@@ -34,6 +34,33 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "copyright": "Copyright (C) 2026 LibOne Contributors",
+    "shortDescription": "Your private, local-first document library for Windows",
+    "longDescription": "LibOne provides a fast, non-destructive library layer over your documents where they already live, indexing them in place without moving, renaming, altering, or uploading them.",
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": null,
+      "tsp": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "allowDowngrades": true,
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "languages": [
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerHooks": "nsis/hooks.nsh"
+      },
+      "wix": {
+        "language": "en-US"
+      }
+    }
   }
 }

@@ -429,3 +429,33 @@ Phase 4 introduces an on-demand, privacy-safe system diagnostics and health repo
 - **Path Redaction**: Built-in sanitizer redacts personal username segments in Windows (`C:\Users\<redacted>\...`) and POSIX (`/home/<redacted>/...`) paths, while preserving drive letters and relative application paths for debugging.
 - **Local Save**: Users can copy redacted or full diagnostics text to the clipboard or save locally as `.txt` or `.json` files via atomic sibling writes and native save dialogs.
 - **Disk Space Warning**: Queries native OS volume metrics (`GetDiskFreeSpaceExW` on Windows) to detect low-space conditions (< 2 GB or < 5% available) without accessing file contents.
+
+---
+
+## 14. Windows Release, Packaging, and Uninstallation Architecture
+
+### 14.1 Tauri Packaging & Installer Configuration
+- **Installer Format**: Windows NSIS setup installer (`.exe`) and optional MSI installer (`.msi`).
+- **Install Mode**: `currentUser` (per-user installation to `%LOCALAPPDATA%\Programs\LibOne`). Does not require administrator privileges or UAC elevation for standard usage.
+- **Application Identity**: Name `LibOne`, version `0.1.0`, bundle identifier `com.libone.app`.
+- **Application Icons**: Multi-resolution `icon.ico` and standard PNG icon sets generated under `src-tauri/icons/`.
+
+### 14.2 Clean Uninstallation & User Document Safety
+- **Original User Documents are Never Touched**: Uninstallation strictly removes application binaries, shortcuts, and registry keys. Original document files indexed across user drives are 100% untouched.
+- **Optional Metadata Preservation Hook (`hooks.nsh`)**: During uninstallation, the custom NSIS uninstaller hook prompts the user via a native dialog:
+  - **Click 'No'**: Preserves `%APPDATA%\com.libone.app\libone.db` (tags, collections, notes, index state) so a future re-installation or upgrade retains all organization.
+  - **Click 'Yes'**: Performs a complete clean removal of application settings and cached metadata.
+
+### 14.3 Database Schema Migrations on Upgrade
+- **Sequential Transactional Upgrades**: Upgrading LibOne to a new release automatically executes `db.migrate()` inside an SQLite transaction upon first launch.
+- **Backwards Compatibility**: Migrations from schema versions 1, 2, 3 to 4 are executed sequentially and idempotently, preserving all existing user records, tags, and collections without manual intervention.
+
+### 14.4 WebView2 Runtime Strategy
+- **Target OS**: Windows 10 and 11 (64-bit).
+- **Runtime Mode**: Uses the Microsoft Edge WebView2 runtime. Windows 11 and recent Windows 10 installations include WebView2 natively.
+- **Evergreen Bootstrapper**: In stripped or older Windows 10 environments lacking WebView2, Tauri's installer downloads and installs the official Microsoft Evergreen bootstrapper silently.
+
+### 14.5 Release Optimization Profile & Build Artifacts on D:
+- **Rust Release Profile**: `[profile.release]` enforces `codegen-units = 1`, `lto = true`, `opt-level = 3`, `panic = "abort"`, and `strip = true` for maximum runtime performance, compact binary size (~15 MB), and symbol stripping.
+- **Strict D: Drive Containment**: Build targets and bundle outputs are redirected to `D:\LibOne\.cargo-target` via `.cargo/config.toml`, keeping compilation entirely isolated on the secondary drive.
+

@@ -138,5 +138,28 @@ This document transparently records the architectural constraints, platform-spec
 
 ### 6.4 Privacy-Safe Diagnostics Scope
 - Diagnostics inspect filesystem paths, schema versions, watcher health, and index counters only. Original document contents, user notes, passwords, and tokens are never read, stored, or transmitted.
+
+---
+
+## 7. Windows Release, Code Signing & Installation Boundaries
+
+### 7.1 Code Signing & Windows SmartScreen
+- LibOne release binaries are published without commercial EV/OV code-signing certificates by default.
+- On Windows 10 and 11, Microsoft Defender SmartScreen will initially flag downloaded `.exe` installers as "unrecognized app".
+- Users must manually click "More info" -> "Run anyway", or verify the file against published SHA-256 checksums in `SHA256SUMS.txt`.
+
+### 7.2 WebView2 Dependency
+- LibOne relies on the Microsoft Edge WebView2 runtime for frontend presentation.
+- WebView2 is pre-installed on Windows 11 and all modern Windows 10 builds (version 20H2 and newer).
+- If launched on an enterprise LTSB/LTSC or stripped Windows edition lacking WebView2, the installer will attempt to download the Evergreen WebView2 bootstrapper silently. Offline installation requires the user to install the WebView2 runtime beforehand.
+
+### 7.3 Per-User Installation Scope
+- The NSIS installer operates in `currentUser` mode and installs to `%LOCALAPPDATA%\Programs\LibOne`.
+- This ensures installation does not require administrator privileges or UAC elevation, but means the app is installed for the active user account rather than system-wide for all users.
+
+### 7.4 Uninstallation & Document Safety
+- Uninstallation never touches, modifies, or deletes original document files on disk.
+- Users can choose during uninstallation whether to retain or discard their library tags, notes, and collections in `%APPDATA%\com.libone.app\`. If retained, reinstalling LibOne restores immediate access to all existing organization.
+
 - Disk-space detection is scoped to the volume hosting the SQLite database. Separate physical drives for secondary scan roots are not probed if unmounted.
 - Redaction sanitizes standard user profile directory patterns (`C:\Users\<user>`); custom directory structures outside standard user profiles remain unredacted unless the user chooses to review/edit before sharing.

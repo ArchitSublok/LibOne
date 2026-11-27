@@ -113,20 +113,38 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
    npm run tauri dev
    ```
 
-8. **Compile production release binary**:
+8. **Compile production release binary (portable)**:
    ```powershell
    cd src-tauri
    cargo build --release
    cd ..
    ```
    The optimized executable will be located at:
-   `src-tauri\target\release\libone.exe`
+   `D:\LibOne\.cargo-target\release\libone.exe`
+
+9. **Build Windows Installer Bundles**:
+   ```powershell
+   npm run tauri build
+   ```
+   The generated Windows setup installer will be located at:
+   `D:\LibOne\.cargo-target\release\bundle\nsis\LibOne_0.1.0_x64-setup.exe`
+
+---
+
+## Windows Release & Installation
+
+- **Runtime Assumptions**: LibOne targets Windows 10 and 11 (64-bit). The shell uses Microsoft Edge WebView2, which is pre-installed on Windows 11 and modern Windows 10. The installer automatically includes an Evergreen bootstrapper fallback if WebView2 is missing.
+- **Clean Uninstallation**: Uninstallation cleanly removes all application binaries and shortcuts without touching original user documents on disk. The uninstaller prompts the user whether to preserve application metadata in `%APPDATA%\com.libone.app` for future installs or perform a clean deletion.
+- **Database Migrations**: When updating to a newer release, schema migrations (v1, v2, v3 -> v4) execute automatically and transactionally on first launch without requiring manual intervention.
+- **Release Verification**: See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for full pre-release verification, build steps, and checksum generation.
 
 ---
 
 ## Documentation Index
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Technical architecture, database schemas, scanner/watcher lifecycle, Phase 2 as-built behavior, and security model.
+- [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) — Windows release packaging checklist, artifact locations on D:, build commands, and safety gates.
+- [GITHUB_RELEASES.md](GITHUB_RELEASES.md) — Instructions for drafting GitHub Releases, templates, SmartScreen notes, and asset packaging.
 - [EXPORT_FORMAT.md](EXPORT_FORMAT.md) — JSON schema definition, example payload, and semantic compatibility rules for metadata exports (v1.2.0).
 - [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) — Platform edge cases, Phase 1/Phase 2 boundaries, and known limitations.
 - [PHASE_1_MANUAL_TEST_PLAN.md](PHASE_1_MANUAL_TEST_PLAN.md) — 10 reproducible Phase 1 manual test cases.
