@@ -108,11 +108,12 @@ fn test_upgrade_from_phase1_database() {
                  display_name TEXT NOT NULL,
                  enabled INTEGER NOT NULL DEFAULT 1,
                  created_at TEXT NOT NULL,
+                 last_scan_started_at TEXT,
                  last_scan_completed_at TEXT,
                  last_scan_status TEXT
              );
-             INSERT INTO scan_roots (id, absolute_path, normalized_path, display_name, enabled, created_at)
-             VALUES (1, 'D:\\Docs', 'd:\\docs', 'Documents', 1, '2026-01-01T00:00:00Z');
+             INSERT INTO scan_roots (id, absolute_path, normalized_path, display_name, enabled, created_at, last_scan_status)
+             VALUES (1, 'D:\\Docs', 'd:\\docs', 'Documents', 1, '2026-01-01T00:00:00Z', 'completed');
 
              CREATE TABLE indexed_files (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +124,7 @@ fn test_upgrade_from_phase1_database() {
                  extension TEXT NOT NULL,
                  size_bytes INTEGER NOT NULL,
                  modified_at TEXT,
+                 created_at_if_available TEXT,
                  discovered_at TEXT NOT NULL,
                  last_seen_at TEXT NOT NULL,
                  content_hash_nullable TEXT,
@@ -199,6 +201,7 @@ fn test_upgrade_from_phase2_database() {
                  extension TEXT NOT NULL,
                  size_bytes INTEGER NOT NULL,
                  modified_at TEXT,
+                 created_at_if_available TEXT,
                  discovered_at TEXT NOT NULL,
                  last_seen_at TEXT NOT NULL,
                  content_hash_nullable TEXT,
