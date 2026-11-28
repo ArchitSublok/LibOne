@@ -33,9 +33,11 @@ fn test_interrupted_scan_recovers_cleanly_on_rescan() {
         .add_scan_root(root_dir.to_str().unwrap(), "Docs")
         .unwrap();
 
-    // Simulate an interrupted scan: mark root as scanning, then recover via a fresh scan
-    db.record_scan_started(root.id).unwrap();
-    let progress = scan_folder_with_progress(&db, root.id, None, None, |_| {}).unwrap();
+    // Simulate an interrupted scan: record an interrupted scan status, then recover via a fresh scan
+    db.record_scan_error(root.id, "interrupted").unwrap();
+    let progress =
+        scan_folder_with_progress(&db, root.id, &root.absolute_path, None, None, None, |_| {})
+            .unwrap();
     assert_eq!(progress.state, "completed");
     let files = db.get_files_for_root(root.id).unwrap();
     assert_eq!(files.len(), 2);
@@ -57,12 +59,20 @@ fn test_scan_cancellation_preserves_unvisited_files_as_indexed() {
         .unwrap();
 
     // Initial complete scan
-    scan_folder_with_progress(&db, root.id, None, None, |_| {}).unwrap();
+    scan_folder_with_progress(&db, root.id, &root.absolute_path, None, None, None, |_| {}).unwrap();
 
     // Cancelled scan must NOT mark existing unvisited files as missing
     let cancel_token = AtomicBool::new(true);
-    let progress =
-        scan_folder_with_progress(&db, root.id, None, Some(&cancel_token), |_| {}).unwrap();
+    let progress = scan_folder_with_progress(
+        &db,
+        root.id,
+        &root.absolute_path,
+        None,
+        None,
+        Some(&cancel_token),
+        |_| {},
+    )
+    .unwrap();
     assert_eq!(progress.state, "cancelled");
 
     let files = db.get_files_for_root(root.id).unwrap();
@@ -76,13 +86,13 @@ fn test_scan_cancellation_preserves_unvisited_files_as_indexed() {
 fn test_watcher_failure_and_restart_lifecycle() {
     let mut wm = WatcherManager::new();
     let status_before = wm.get_overall_status();
-    assert_eq!(status_before.active_roots, 0);
+    assert_eq!(status_before.watched_roots_count, 0);
 
     // Stopping non-existent or all watchers is idempotent and safe
     wm.stop_watching_root(999);
     wm.stop_all();
     let status_after = wm.get_overall_status();
-    assert_eq!(status_after.active_roots, 0);
+    assert_eq!(status_after.watched_roots_count, 0);
 }
 
 #[test]
@@ -96,7 +106,8 @@ fn test_disconnected_drive_or_missing_root_graceful_handling() {
         .unwrap();
 
     // Scanning a disconnected drive/missing root returns an Err without panicking or deleting metadata
-    let res = scan_folder_with_progress(&db, root.id, None, None, |_| {});
+    let res =
+        scan_folder_with_progress(&db, root.id, &root.absolute_path, None, None, None, |_| {});
     assert!(res.is_err());
 
     let roots = db.list_scan_roots().unwrap();
@@ -124,7 +135,9 @@ fn test_locked_file_handled_without_aborting_scan() {
         .add_scan_root(root_dir.to_str().unwrap(), "Docs")
         .unwrap();
 
-    let progress = scan_folder_with_progress(&db, root.id, None, None, |_| {}).unwrap();
+    let progress =
+        scan_folder_with_progress(&db, root.id, &root.absolute_path, None, None, None, |_| {})
+            .unwrap();
     assert_eq!(progress.state, "completed");
     let files = db.get_files_for_root(root.id).unwrap();
     assert!(!files.is_empty());

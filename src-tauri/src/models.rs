@@ -421,3 +421,61 @@ pub struct DiagnosticsReport {
     pub disk_space: Option<DiskSpaceInfo>,
     pub generated_at: String,
 }
+
+/// Sanitizes a filesystem path by replacing personal user home folder names
+/// with `<redacted>` for privacy-safe logs and diagnostics.
+pub fn redact_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+
+    // Windows paths: C:\Users\<Username>\...
+    let lower = path.to_lowercase();
+    if let Some(idx) = lower.find(":\\users\\") {
+        let prefix_end = idx + 8; // length of ":\\Users\\"
+        let rest = &path[prefix_end..];
+        if let Some(slash_idx) = rest.find('\\') {
+            let after_user = &rest[slash_idx..];
+            return format!("{}<redacted>{}", &path[..prefix_end], after_user);
+        } else {
+            return format!("{}<redacted>", &path[..prefix_end]);
+        }
+    }
+
+    // Unix paths: /home/<username>/... or /Users/<username>/...
+    for prefix in &["/home/", "/Users/", "/users/"] {
+        if let Some(idx) = path.find(prefix) {
+            let prefix_end = idx + prefix.len();
+            let rest = &path[prefix_end..];
+            if let Some(slash_idx) = rest.find('/') {
+                let after_user = &rest[slash_idx..];
+                return format!("{}<redacted>{}", &path[..prefix_end], after_user);
+            } else {
+                return format!("{}<redacted>", &path[..prefix_end]);
+            }
+        }
+    }
+
+    path.to_string()
+}
+
+/// Produces a copy of the DiagnosticsReport with user-identifying filesystem paths sanitized.
+pub fn redact_diagnostics_report(report: &DiagnosticsReport) -> DiagnosticsReport {
+    let mut redacted = report.clone();
+    redacted.db_path = redact_path(&report.db_path);
+    redacted.app_data_dir = redact_path(&report.app_data_dir);
+    if let Some(safety_path) = &report.backup_health.latest_safety_backup_path {
+        redacted.backup_health.latest_safety_backup_path = Some(redact_path(safety_path));
+    }
+    redacted.watcher_health.root_statuses = report
+        .watcher_health
+        .root_statuses
+        .iter()
+        .map(|r| {
+            let mut s = r.clone();
+            s.path = redact_path(&r.path);
+            s
+        })
+        .collect();
+    redacted
+}

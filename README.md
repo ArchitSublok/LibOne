@@ -149,3 +149,4 @@ LibOne Phase 1 delivers a rock-solid local foundation for document discovery, tr
 - [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) — Platform edge cases, Phase 1/Phase 2 boundaries, and known limitations.
 - [PHASE_1_MANUAL_TEST_PLAN.md](PHASE_1_MANUAL_TEST_PLAN.md) — 10 reproducible Phase 1 manual test cases.
 - [PHASE_2_PLAN.md](PHASE_2_PLAN.md) — Original Phase 2 plan plus the as-built integration review and differences.
+- [PHASE_4_RELEASE_TEST_PLAN.md](PHASE_4_RELEASE_TEST_PLAN.md) — 10 reproducible Windows release test cases and acceptance sign-off sheet for Phase 4.
